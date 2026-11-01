@@ -20,6 +20,8 @@ const PROTECTED_AT_DRIVE_ROOT = new Set(
   ].map((name) => name.toLowerCase())
 )
 
+// An absolute path on a drive (`C:\x`). normalizePath has already made the drive letter upper case.
+const DRIVE_PATH = /^[A-Z]:\\/
 const DRIVE_ROOT = /^[A-Z]:\\$/
 // The first name below the drive root, taken from a pathKey: `c:\windows\x` gives `windows`.
 const FIRST_NAME_BELOW_DRIVE = /^[a-z]:\\([^\\]+)/
@@ -44,12 +46,16 @@ function personalFolders(env: WinEnv): string[] {
 }
 
 /**
- * True for paths Stash must never move to the Recycle Bin: drive roots, Windows and program
- * folders, other users' profiles, the registry files, the user's profile and personal folders along
- * with everything above them (their contents stay open to cleanup), and Stash's own folders.
+ * True for paths Stash must never move to the Recycle Bin: anything that is not an absolute path on
+ * a drive (it cannot be judged), drive roots, Windows and program folders, other users' profiles,
+ * the registry files, the user's profile and personal folders along with everything above them
+ * (their contents stay open to cleanup), and Stash's own folders.
  */
 export function isBlocked(p: string, env: WinEnv): boolean {
   const normalized = normalizePath(p)
+  // Relative, rooted (`\x`), drive-relative (`C:x`) and network paths, and the empty string, cannot be
+  // judged by the rules below. No scan produces them, so if one turns up something is wrong: refuse it.
+  if (!DRIVE_PATH.test(normalized)) return true
   if (DRIVE_ROOT.test(normalized)) return true
 
   const nameBelowDrive = FIRST_NAME_BELOW_DRIVE.exec(pathKey(normalized))?.[1] ?? ''

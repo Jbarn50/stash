@@ -49,8 +49,26 @@ test.each([
   'D:\\Games\\a.bin',
   // The protected names only apply at the top of a drive or the profile folder.
   'C:\\Users\\jorda\\Projects\\Windows\\x',
-  'C:\\Users\\jorda\\Projects\\ntuser.dat'
+  'C:\\Users\\jorda\\Projects\\ntuser.dat',
+  // Other spellings of an ordinary drive path are not mistaken for paths without a drive.
+  'd:/Games/a.bin',
+  '\\\\?\\D:\\Games\\a.bin'
 ])('allows %s', (p) => expect(isBlocked(p, SAMPLE_ENV)).toBe(false))
+
+// The blocklist is the last guard before a file moves. A path that is not an absolute path on a
+// drive cannot be judged by the rules above, so it is refused rather than let through.
+test.each([
+  'relative\\x',
+  'x.txt',
+  '\\Windows\\x',
+  '\\\\server\\share\\x',
+  '\\\\?\\UNC\\server\\share\\x',
+  '',
+  'C:x',
+  'C:'
+])('blocks %j, which is not an absolute path on a drive', (p) =>
+  expect(isBlocked(p, SAMPLE_ENV)).toBe(true)
+)
 
 test('the OneDrive folder is protected even when Desktop and Documents live outside it', () => {
   const env = {
