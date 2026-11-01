@@ -1,6 +1,10 @@
 # Stash Space & Cleanup (v1) Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** Each task's mode comes from the **Execution mode** table below. Re-read the task's row just before starting it, because the user can flip it at any time.
+> - `subagent` rows: REQUIRED SUB-SKILL superpowers:subagent-driven-development.
+> - `native` rows: REQUIRED SUB-SKILL superpowers:executing-plans.
+>
+> Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Build the Stash app shell and its Space module:
 - scan a drive and show where the space goes
@@ -101,6 +105,40 @@
 - **Image-sequence folders.** A folder counts as an image sequence only if it has no subfolders and the frames make up ≥ 90% of its size. This keeps a folder that also holds other work out of the bin.
 - **Cancel.** Cancelling a scan skips duplicate hashing. The static findings for what was scanned are kept, marked incomplete.
 - **Locked system files.** Locked files at a drive root, such as `pagefile.sys` and `hiberfil.sys`, are measured through one PowerShell `Get-Item` call. Node gets `EPERM` on them.
+
+## Execution mode
+
+Each task runs in one of two modes. This table holds the current setting for every task.
+
+- **`subagent`:** a fresh subagent builds the task, then a separate reviewer checks it before the next task starts.
+- **`native`:** the main session builds the task itself.
+- **Whichever modes are used,** one whole-branch review runs after Task 19.
+
+**Switching:** edit a row's mode here, or tell Claude, for example "task 8 subagent", "all native" or "all subagent". It works mid-build: a change applies from the next task that hasn't started.
+
+**Defaults:** `subagent` for the tasks that decide what may be moved, refused or restored; `native` for everything else.
+
+| Task | Mode | Why this default |
+|---|---|---|
+| 1. Scaffold and test tooling | native | setup |
+| 2. Verification spikes | native | throwaway scripts |
+| 3. Paths, settings, blocklist | subagent | decides what can never be cleaned |
+| 4. Scan tree model | native | — |
+| 5. Scanner and fixture | native | — |
+| 6. Rules and static detectors | native | — |
+| 7. Dev & creative leftovers | native | — |
+| 8. Duplicates | native | — |
+| 9. Workers and scan session | subagent | rejects finding IDs from old scans |
+| 10. Recycle Bin info | subagent | decides whether a drive may be cleaned |
+| 11. Settings and cleanup log | native | — |
+| 12. Cleanup engine | subagent | the only code that moves files |
+| 13. Restore engine | subagent | moves files back |
+| 14. IPC and wiring | subagent | turns finding IDs into paths |
+| 15. App shell and Overview | native | — |
+| 16. Explore | native | — |
+| 17. Cleanup screen | native | — |
+| 18. History and Settings | native | — |
+| 19. Round trip and installer | native | — |
 
 ---
 
