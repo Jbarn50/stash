@@ -2,6 +2,12 @@
 
 This document hands the Stash build to another AI. It is self-contained. When it names a file you cannot open, ask the user to paste it.
 
+## Current status (reviewed 2026-11-02)
+
+Tasks 1–18 are on `feat/space-cleanup`. Task 19's e2e test and NSIS settings are in the tree; the Windows install and the manual-check results are not. The final review is `docs/reviews/2026-11-02-space-cleanup-final-review.md`. Shortcuts and icons are in `docs/installer.md`.
+
+The status table and the numbered next steps below are the handover as it was written, before Tasks 14–18 and the e2e round trip landed. They are kept so the briefs stay in context. Follow the review for what is left.
+
 ## What Stash is
 
 Stash is a Windows desktop app (Electron 45 + TypeScript + React, built with electron-vite) for managing a user's files. Its first module, **Space & Cleanup v1**, is what is being built here:
