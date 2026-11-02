@@ -2,7 +2,7 @@ import { realpathSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { app } from 'electron'
-import { isPlainDrivePath, normalizePath } from '../core/paths'
+import { driveOf, isPlainDrivePath, normalizePath } from '../core/paths'
 import type { WinEnv } from '../shared/types'
 
 /** The folders Electron knows by name, as `app.getPath` gives them. */
@@ -45,6 +45,11 @@ const present = (value: string | undefined): string | undefined =>
 /**
  * The WinEnv for these folders and variables, every path through `canonical`. A missing SystemRoot,
  * LOCALAPPDATA or TEMP falls back to where Windows keeps it; a missing OneDrive is null.
+ *
+ * `systemRoot` is the root of the drive Windows is on (`C:\`), not the Windows folder that the
+ * SystemRoot variable names: the rules say `%SYSTEMROOT%\Windows\Temp` and look for `hiberfil.sys`
+ * directly in it. A SystemRoot with no drive letter is kept as it is, so the blocklist refuses
+ * everything rather than trust it.
  */
 export function winEnvFrom(
   folders: KnownFolders,
@@ -53,8 +58,10 @@ export function winEnvFrom(
 ): WinEnv {
   const userProfile = canonical(folders.home)
   const oneDrive = present(vars.OneDrive)
+  const windowsDir = canonical(present(vars.SystemRoot) ?? 'C:\\Windows')
+  const systemDrive = driveOf(windowsDir)
   return {
-    systemRoot: canonical(present(vars.SystemRoot) ?? 'C:\\Windows'),
+    systemRoot: systemDrive === '' ? windowsDir : `${systemDrive}\\`,
     usersRoot: normalizePath(dirname(userProfile)),
     userProfile,
     localAppData: canonical(present(vars.LOCALAPPDATA) ?? join(userProfile, 'AppData', 'Local')),

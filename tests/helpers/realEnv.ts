@@ -1,5 +1,6 @@
 import { realpathSync } from 'node:fs'
 import { dirname, join } from 'node:path'
+import { driveOf } from '../../src/core/paths'
 import type { WinEnv } from '../../src/shared/types'
 
 /**
@@ -31,7 +32,8 @@ export function realEnv(): WinEnv {
   const personal = (name: string): string => canonical(join(userProfile, name))
   const oneDrive = process.env.OneDrive
   return {
-    systemRoot: canonical(required('SystemRoot')),
+    // The root of the drive Windows is on, as the app has it: the rules say %SYSTEMROOT%\\Windows.
+    systemRoot: `${driveOf(required('SystemRoot'))}\\`,
     usersRoot: dirname(userProfile),
     userProfile,
     localAppData: canonical(required('LOCALAPPDATA')),

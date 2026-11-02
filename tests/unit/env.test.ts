@@ -31,7 +31,9 @@ test('builds WinEnv from the known folders and the variables, canonicalized', ()
     expand
   )
   expect(env).toEqual({
-    systemRoot: 'C:\\WINDOWS',
+    // The system drive's root, not the Windows folder: the rules say %SYSTEMROOT%\\Windows\\Temp
+    // and look for hiberfil.sys directly in %SYSTEMROOT%.
+    systemRoot: 'C:\\',
     usersRoot: 'C:\\Users',
     userProfile: 'C:\\Users\\jorda',
     localAppData: 'C:\\Users\\jorda\\AppData\\Local',
@@ -56,6 +58,12 @@ test('a missing OneDrive is null, and a short name left as it is gets reported',
   expect(env.oneDrive).toBeNull()
   expect(env.localAppData).toBe('C:\\Users\\JORDAN~1\\AppData\\Local')
   expect(unplainPaths(env)).toContain('C:\\Users\\JORDAN~1')
+})
+
+test('systemRoot is the root of the drive Windows is on, C:\\ when SystemRoot is missing', () => {
+  expect(winEnvFrom(FOLDERS, { SystemRoot: 'D:\\Windows' }, (p) => p).systemRoot).toBe('D:\\')
+  expect(winEnvFrom(FOLDERS, { SystemRoot: 'c:\\windows\\' }, (p) => p).systemRoot).toBe('C:\\')
+  expect(winEnvFrom(FOLDERS, {}, (p) => p).systemRoot).toBe('C:\\')
 })
 
 // A folder of the test's own, so nothing of the user's is read.
