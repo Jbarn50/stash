@@ -1,6 +1,5 @@
-import { win32 } from 'node:path'
 import type { Settings, Thresholds } from '../shared/types'
-import { driveOf, normalizePath } from './paths'
+import { isPlainDrivePath, normalizePath } from './paths'
 
 export const MiB = 1_048_576
 
@@ -30,12 +29,12 @@ function isPositiveInteger(value: unknown): value is number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value > 0
 }
 
-// The normalized path, or null unless it is absolute and starts with a drive letter (`C:\...`).
-// Relative, drive-relative (`C:x`), rooted (`\x`) and network paths are all refused.
+// The normalized path, or null unless it is a plain absolute path on a drive (see isPlainDrivePath).
+// Relative, drive-relative (`C:x`), rooted (`\x`) and network paths are refused, and so are other
+// spellings of a folder (`C:\Windows.`, `C:\x:stream`, `C:\PROGRA~1`), which an exclusion or a scan
+// target would otherwise treat as a different folder from the one Windows opens.
 function drivePath(value: unknown): string | null {
-  if (typeof value !== 'string') return null
-  const normalized = normalizePath(value)
-  return win32.isAbsolute(normalized) && driveOf(normalized) !== '' ? normalized : null
+  return typeof value === 'string' && isPlainDrivePath(value) ? normalizePath(value) : null
 }
 
 function pathList(value: unknown, defaults: string[], field: string): string[] {

@@ -1,6 +1,6 @@
 import { win32 } from 'node:path'
 import type { WinEnv } from '../shared/types'
-import { isSameOrInside, normalizePath, pathKey } from './paths'
+import { isPlainDrivePath, isSameOrInside, normalizePath, pathKey } from './paths'
 
 // Folders and files that sit directly under the root of any drive. Names are lower case because
 // they are matched against a pathKey.
@@ -20,18 +20,16 @@ const PROTECTED_AT_DRIVE_ROOT = new Set(
   ].map((name) => name.toLowerCase())
 )
 
-// An absolute path on a drive (`C:\x`). normalizePath has already made the drive letter upper case.
-const DRIVE_PATH = /^[A-Z]:\\/
-const DRIVE_ROOT = /^[A-Z]:\\$/
-// The first name below the drive root, taken from a pathKey: `c:\windows\x` gives `windows`.
-const FIRST_NAME_BELOW_DRIVE = /^[a-z]:\\([^\\]+)/
 // DumpStack.log and DumpStack.log.tmp, the crash-dump files Windows keeps at a drive root.
 const CRASH_DUMP = /^dumpstack\.log/
 // The registry files in a profile folder: NTUSER.DAT, ntuser.dat.LOG1 and so on.
 const REGISTRY_HIVE = /^ntuser\./i
 
-// The profile folder and the personal folders. They, and every folder above them, are blocked.
-function personalFolders(env: WinEnv): string[] {
+// The folders Stash must not clean: the user's profile and personal folders, %TEMP%, %LOCALAPPDATA%
+// and Stash's own folders. Recycling a folder takes everything in it, so each is blocked together
+// with every folder above it. What is inside stays open to cleanup, except inside Stash's own
+// folders, which isBlocked checks separately.
+function protectedFolders(env: WinEnv): string[] {
   const folders = [
     env.userProfile,
     env.downloads,
@@ -40,25 +38,40 @@ function personalFolders(env: WinEnv): string[] {
     env.pictures,
     env.music,
     env.videos,
-    env.oneDrive
+    env.oneDrive,
+    env.temp,
+    env.localAppData,
+    ...env.stashDirs
   ]
   return folders.filter((folder) => folder !== null)
 }
 
+// Every WinEnv path the rules lean on. If one is empty, relative or another spelling of a folder,
+// its rule would quietly stop matching what it should.
+function envPathsArePlain(env: WinEnv): boolean {
+  return [env.systemRoot, env.usersRoot, ...protectedFolders(env)].every(isPlainDrivePath)
+}
+
 /**
- * True for paths Stash must never move to the Recycle Bin: anything that is not an absolute path on
- * a drive (it cannot be judged), drive roots, Windows and program folders, other users' profiles,
- * the registry files, the user's profile and personal folders along with everything above them
- * (their contents stay open to cleanup), and Stash's own folders.
+ * True for paths Stash must never move to the Recycle Bin:
+ * - a path that is not a plain absolute path on a drive (see isPlainDrivePath), and every path when
+ *   one of the paths in `env` is not: the rules below cannot be trusted, so nothing is cleaned;
+ * - drive roots, and what sits directly under them: Windows, program folders, the Recycle Bin and
+ *   the swap and crash-dump files;
+ * - other users' profiles, and the registry files in this user's profile;
+ * - this user's profile, personal folders, OneDrive, %TEMP%, %LOCALAPPDATA% and Stash's own folders,
+ *   with every folder above them. What is inside them stays open to cleanup, except inside Stash's
+ *   own folders.
  */
 export function isBlocked(p: string, env: WinEnv): boolean {
-  const normalized = normalizePath(p)
-  // Relative, rooted (`\x`), drive-relative (`C:x`) and network paths, and the empty string, cannot be
-  // judged by the rules below. No scan produces them, so if one turns up something is wrong: refuse it.
-  if (!DRIVE_PATH.test(normalized)) return true
-  if (DRIVE_ROOT.test(normalized)) return true
+  // Fail closed. The rules compare spellings, which is only safe for plain drive paths. No scan
+  // produces anything else, so a relative, rooted, network or aliased path means something is wrong.
+  if (!isPlainDrivePath(p) || !envPathsArePlain(env)) return true
 
-  const nameBelowDrive = FIRST_NAME_BELOW_DRIVE.exec(pathKey(normalized))?.[1] ?? ''
+  const normalized = normalizePath(p)
+  // `c:\windows\x` splits into `c:`, `windows` and `x`: the drive, then the names below it.
+  const [, nameBelowDrive = ''] = pathKey(normalized).split('\\')
+  if (nameBelowDrive === '') return true // nothing below the drive: it is a drive root
   if (PROTECTED_AT_DRIVE_ROOT.has(nameBelowDrive) || CRASH_DUMP.test(nameBelowDrive)) return true
 
   // Other users' profiles, Public and Default: all of C:\Users except this user's own profile.
@@ -69,8 +82,8 @@ export function isBlocked(p: string, env: WinEnv): boolean {
   const directlyInProfile = pathKey(win32.dirname(normalized)) === pathKey(env.userProfile)
   if (directlyInProfile && REGISTRY_HIVE.test(win32.basename(normalized))) return true
 
-  // `normalized` is one of the personal folders, or a parent of one, when that folder lies beneath it.
-  if (personalFolders(env).some((folder) => isSameOrInside(folder, normalized))) return true
+  // `normalized` is a protected folder, or a parent of one, when that folder lies beneath it.
+  if (protectedFolders(env).some((folder) => isSameOrInside(folder, normalized))) return true
 
   return env.stashDirs.some((dir) => isSameOrInside(normalized, dir))
 }

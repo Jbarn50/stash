@@ -69,6 +69,11 @@ test.each([
   [{ exclusions: ['\\\\server\\share\\x'] }, 'exclusions'],
   [{ personalFolders: ['\\no-drive'] }, 'personalFolders'],
   [{ scanTargets: ['C:'] }, 'scanTargets'],
+  // Another spelling of a folder: a trailing dot or space, an NTFS stream, an 8.3 short name.
+  [{ scanTargets: ['C:\\Windows.'] }, 'scanTargets'],
+  [{ exclusions: ['D:\\games '] }, 'exclusions'],
+  [{ personalFolders: ['C:\\PROGRA~1'] }, 'personalFolders'],
+  [{ exclusions: ['C:\\x:stream'] }, 'exclusions'],
   [{ thresholds: 5 }, 'thresholds'],
   [{ thresholds: { trackFileMinBytes: -1 } }, 'thresholds.trackFileMinBytes'],
   [{ thresholds: { staleMinBytes: Number.NaN } }, 'thresholds.staleMinBytes'],
