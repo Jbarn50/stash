@@ -192,6 +192,50 @@ function resolvedIds(r: ReturnType<ScanSession['resolveFindings']>): string[] {
   return r.findings.map((f) => f.id)
 }
 
+interface Copy {
+  path: string
+  mtimeMs: number
+}
+
+/**
+ * A scan that finds only duplicates. Every file of a group has the group's size, and the copies keep
+ * the order given: their findings are numbered duplicates:0, duplicates:1, ... across the groups.
+ */
+function harnessWithGroups(groups: { size: number; copies: Copy[] }[]): Harness {
+  const files = groups.flatMap((g) => g.copies.map((c) => ({ ...c, size: g.size })))
+  const entries = Object.fromEntries(
+    files.map((f) => [f.path.slice(ROOT.length), { size: f.size, mtimeMs: f.mtimeMs }])
+  )
+  let next = 0
+  const fileIds = groups.map((g) => g.copies.map(() => next++))
+  return harness({
+    scan: async (job) =>
+      scanDone(job, {
+        tree: treeFrom(ROOT, entries).toData(),
+        findings: [],
+        candidates: groups.map((g, i) => ({
+          logicalSize: g.size,
+          fileIds: fileIds[i],
+          paths: g.copies.map((c) => c.path)
+        }))
+      }),
+    hash: async () => groups.map((_, i) => ({ hash: `group-${i}`, fileIds: fileIds[i] }))
+  })
+}
+
+/** Each duplicate finding as [path, whether it is the copy to keep], in the order of the findings. */
+const copiesLeft = (session: ScanSession): [string, boolean][] =>
+  session
+    .latest!.findings.filter((f) => f.ruleId === 'duplicates')
+    .map((f): [string, boolean] => [f.path, f.suggestedKeep === true])
+
+/** Takes copies out of the results; `copy(n)` is the id of the finding numbered duplicates:n. */
+type Act = (h: Harness, copy: (n: number) => string) => void
+const excluding =
+  (folder: string): Act =>
+  (h) =>
+    h.session.applyExclusions(validateSettings({ exclusions: [folder] }))
+
 describe('a scan from start to done', () => {
   test('scan, then hash, then done with duplicates included and state ready', async () => {
     const h = harness()
@@ -552,25 +596,28 @@ describe('changing the results after a scan', () => {
   test('applyExclusions drops findings inside an exclusion, ignoring case, but not a folder that only shares the start of its name', async () => {
     const h = harness()
     const scanId = await h.runToDone()
-    const dropped = `${scanId}:duplicates:0` // the Downloads copy
+    const dropped = `${scanId}:temp-user:0`
 
     h.session.applyExclusions(
       validateSettings({
-        exclusions: ['C:\\USERS\\JORDA\\DOWNLOADS', 'C:\\Users\\jorda\\AppData\\Local\\Tem']
+        exclusions: [
+          'C:\\USERS\\JORDA\\APPDATA\\LOCAL\\TEMP',
+          'C:\\Windows\\SoftwareDistribution\\Down' // shares the start of ...\Download, but is not its parent
+        ]
       })
     )
 
     expect(idsOf(h.session)).toEqual([
-      `${scanId}:temp-user:0`, // ...\Temp\cache.tmp is not inside ...\Tem
       `${scanId}:sys-windows-update:1`,
+      `${scanId}:duplicates:0`,
       `${scanId}:duplicates:1`
     ])
     expect(h.session.latest!.summary).toMatchObject({
       scanId,
       incomplete: false,
       totalSizeOnDisk: 15 * MiB,
-      reclaimable: 2 * MiB, // only the temp files are left to clean; the kept copy is not counted
-      byCategory: { duplicates: 0, tempCaches: 2 * MiB },
+      reclaimable: 5 * MiB, // the Downloads copy; the temp files are gone and the kept copy is not counted
+      byCategory: { duplicates: 5 * MiB, tempCaches: 0 },
       windowsCanClean: 3 * MiB
     })
     expect(h.session.resolveFindings([dropped])).toEqual({ ok: false, reason: 'unknown-finding' })
@@ -582,6 +629,131 @@ describe('changing the results after a scan', () => {
     h.session.applyExclusions(validateSettings({ exclusions: ['C:\\Users'] }))
     expect(h.session.latest).toBeNull()
     expect(h.session.state).toBe('idle')
+  })
+})
+
+describe('duplicate groups after copies are removed', () => {
+  // suggestKeeper prefers a copy outside Downloads, Temp and Desktop, then the oldest, then the
+  // shortest path. That makes Pictures\Keep the copy to keep in both groups of three below.
+  const downloads: Copy = { path: 'C:\\Users\\jorda\\Downloads\\photo.jpg', mtimeMs: 1 }
+  const keep: Copy = { path: 'C:\\Users\\jorda\\Pictures\\Keep\\photo.jpg', mtimeMs: 5 }
+  const other: Copy = { path: 'C:\\Users\\jorda\\Pictures\\Other\\photo.jpg', mtimeMs: 9 }
+  const older: Copy = { path: 'C:\\Users\\jorda\\Pictures\\Older album\\photo.jpg', mtimeMs: 7 }
+  const newer: Copy = { path: 'C:\\Users\\jorda\\Pictures\\New\\photo.jpg', mtimeMs: 9 }
+  const KEEP_FOLDER = 'C:\\Users\\jorda\\Pictures\\Keep'
+
+  test.each<[string, Act]>([
+    [
+      'removeFindings of the copy a cleanup would take',
+      (h, copy) => h.session.removeFindings([copy(0)])
+    ],
+    ['removeFindings of the copy to keep', (h, copy) => h.session.removeFindings([copy(1)])],
+    ["applyExclusions of the kept copy's folder", excluding('C:\\Users\\jorda\\Pictures')]
+  ])('%s leaves no finding from a two-copy group', async (_name, act) => {
+    // The default scan: the Downloads copy is duplicates:0 and the Pictures copy, to keep, is duplicates:1.
+    const h = harness()
+    const scanId = await h.runToDone()
+    const copy = (n: number): string => `${scanId}:duplicates:${n}`
+
+    act(h, copy)
+
+    // The copy that is left is the last of its file, so it is not offered for cleanup either.
+    expect(idsOf(h.session)).toEqual([`${scanId}:temp-user:0`, `${scanId}:sys-windows-update:1`])
+    expect(h.session.latest!.summary).toMatchObject({
+      reclaimable: 2 * MiB,
+      byCategory: { duplicates: 0, tempCaches: 2 * MiB }
+    })
+    expect(h.session.resolveFindings([copy(0)])).toEqual({ ok: false, reason: 'unknown-finding' })
+    expect(h.session.resolveFindings([copy(1)])).toEqual({ ok: false, reason: 'unknown-finding' })
+  })
+
+  // [what happens, the copies of the group in the order the scan lists them, how copies go, the
+  // copies that are left as [path, whether it is the one to keep]]
+  test.each<[string, Copy[], Act, [string, boolean][]]>([
+    [
+      'a new keeper comes from outside Downloads, though the Downloads copy is older',
+      [downloads, keep, other],
+      excluding(KEEP_FOLDER),
+      [
+        [downloads.path, false],
+        [other.path, true]
+      ]
+    ],
+    [
+      'a new keeper is the oldest of the copies left, whatever their paths',
+      [keep, older, newer],
+      excluding(KEEP_FOLDER),
+      [
+        [older.path, true],
+        [newer.path, false]
+      ]
+    ],
+    [
+      'a keeper removed with removeFindings is replaced the same way',
+      [downloads, keep, other],
+      (h, copy) => h.session.removeFindings([copy(1)]),
+      [
+        [downloads.path, false],
+        [other.path, true]
+      ]
+    ],
+    [
+      'a group whose keeper is still there keeps the same keeper',
+      [downloads, keep, other],
+      excluding('C:\\Users\\jorda\\Pictures\\Other'),
+      [
+        [downloads.path, false],
+        [keep.path, true]
+      ]
+    ]
+  ])('%s', async (_name, copies, act, left) => {
+    const h = harnessWithGroups([{ size: 5 * MiB, copies }])
+    const scanId = await h.runToDone()
+    expect(copiesLeft(h.session).filter(([, kept]) => kept)).toEqual([[keep.path, true]])
+    const before = h.session.latest!.findings
+
+    act(h, (n) => `${scanId}:duplicates:${n}`)
+
+    expect(copiesLeft(h.session)).toEqual(left)
+    // Findings handed out earlier are not edited behind the caller's back.
+    expect(before.filter((f) => f.suggestedKeep)).toHaveLength(1)
+    // Of the two copies left one is to be kept, so only the other one counts as space to win back.
+    expect(h.session.latest!.summary).toMatchObject({
+      reclaimable: 5 * MiB,
+      byCategory: { duplicates: 5 * MiB }
+    })
+  })
+
+  test('each group is judged on its own copies', async () => {
+    const songs = [
+      { path: 'C:\\Users\\jorda\\Downloads\\song.mp3', mtimeMs: 2 },
+      { path: 'C:\\Users\\jorda\\Music\\song.mp3', mtimeMs: 4 }
+    ]
+    const h = harnessWithGroups([
+      { size: 5 * MiB, copies: [downloads, keep, other] },
+      { size: 3 * MiB, copies: songs }
+    ])
+    const scanId = await h.runToDone()
+    expect(copiesLeft(h.session)).toEqual([
+      [downloads.path, false],
+      [keep.path, true],
+      [other.path, false],
+      [songs[0].path, false],
+      [songs[1].path, true]
+    ])
+
+    h.session.removeFindings([`${scanId}:duplicates:3`]) // the Downloads copy of the song
+
+    // The song has one copy left and loses it; the photo's three copies are untouched.
+    expect(copiesLeft(h.session)).toEqual([
+      [downloads.path, false],
+      [keep.path, true],
+      [other.path, false]
+    ])
+    expect(h.session.latest!.summary).toMatchObject({
+      reclaimable: 10 * MiB,
+      byCategory: { duplicates: 10 * MiB }
+    })
   })
 })
 

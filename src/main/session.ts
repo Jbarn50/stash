@@ -6,6 +6,7 @@ import {
 } from '../core/detectors/duplicates'
 import { errorMessage } from '../core/errorMessage'
 import { buildSummary, summarizeFindings } from '../core/findings'
+import { suggestKeeper } from '../core/keeper'
 import { isSameOrInside } from '../core/paths'
 import type { ScanProgressPayload } from '../core/scan/scanTree'
 import { ScanTree } from '../core/tree'
@@ -79,6 +80,41 @@ function scanIdOf(findingId: string): string {
 }
 
 /**
+ * Keeps the duplicate groups (findings that share a groupId) meaningful once some findings are gone.
+ * A group left with one copy is no longer a duplicate, and the last copy of a file must never be
+ * offered for cleanup, so that copy goes too. A group left with several copies but without the one
+ * to keep gets a new keeper, chosen the way the scan chose the first. A group that still has its
+ * keeper is left alone.
+ */
+function normalizeDuplicateGroups(findings: Finding[], env: WinEnv): Finding[] {
+  const groups = new Map<string, Finding[]>()
+  for (const f of findings) {
+    if (f.groupId === undefined) continue
+    const copies = groups.get(f.groupId)
+    if (copies) copies.push(f)
+    else groups.set(f.groupId, [f])
+  }
+
+  const lastCopies = new Set<string>()
+  const newKeepers = new Set<string>()
+  for (const copies of groups.values()) {
+    if (copies.length === 1) lastCopies.add(copies[0].id)
+    else if (!copies.some((c) => c.suggestedKeep)) {
+      const keeperIndex = suggestKeeper(
+        copies.map((c) => ({ path: c.path, mtimeMs: c.mtimeMs })),
+        env
+      )
+      newKeepers.add(copies[keeperIndex].id)
+    }
+  }
+
+  if (lastCopies.size === 0 && newKeepers.size === 0) return findings
+  return findings
+    .filter((f) => !lastCopies.has(f.id))
+    .map((f) => (newKeepers.has(f.id) ? { ...f, suggestedKeep: true } : f))
+}
+
+/**
  * One scan at a time: walk the drive, hash the files that might be duplicates, and keep the result
  * as `latest` until the next scan replaces it. A scan that is cancelled or fails midway still leaves
  * what it found, marked incomplete.
@@ -133,7 +169,10 @@ export class ScanSession {
     return { ok: true, findings }
   }
 
-  /** Forgets findings that have been dealt with, for example once they are recycled. */
+  /**
+   * Forgets findings that have been dealt with, for example once they are recycled. A duplicate group
+   * left with one copy loses that copy too; one left without its keeper gets a new one.
+   */
   removeFindings(ids: string[]): void {
     const latest = this._latest
     if (!latest) return
@@ -142,7 +181,10 @@ export class ScanSession {
     this.replaceFindings(latest, kept)
   }
 
-  /** Drops the findings that lie inside one of the exclusions. */
+  /**
+   * Drops the findings that lie inside one of the exclusions. Duplicate groups are tidied as
+   * removeFindings does.
+   */
   applyExclusions(settings: Settings): void {
     const latest = this._latest
     if (!latest) return
@@ -156,12 +198,14 @@ export class ScanSession {
     return this._state === 'scanning' || this._state === 'hashing'
   }
 
-  // The summary keeps what the scan measured and takes the totals from the findings that are left.
+  // Duplicate groups are put right first. The summary keeps what the scan measured and takes the
+  // totals from the findings that are left, so a copy marked to keep is never counted.
   private replaceFindings(latest: LatestScan, findings: Finding[]): void {
+    const tidied = normalizeDuplicateGroups(findings, this.deps.env)
     this._latest = {
       ...latest,
-      findings,
-      summary: { ...latest.summary, ...summarizeFindings(findings) }
+      findings: tidied,
+      summary: { ...latest.summary, ...summarizeFindings(tidied) }
     }
   }
 
