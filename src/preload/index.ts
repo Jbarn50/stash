@@ -1,5 +1,4 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron'
-import { electronAPI } from '@electron-toolkit/preload'
 import { CHANNELS, type StashApi } from '../shared/ipc'
 import type { SessionEvent } from '../shared/types'
 
@@ -42,25 +41,14 @@ const stash: StashApi = {
   rescanAsAdmin: () => ipcRenderer.invoke(CHANNELS.rescanAsAdmin)
 }
 
-// Custom APIs for renderer
-const api = {}
-
-// Use `contextBridge` APIs to expose Electron APIs to
-// renderer only if context isolation is enabled, otherwise
-// just add to the DOM global.
+// Spec §4.1: the preload exposes window.stash and nothing else.
 if (process.contextIsolated) {
   try {
-    contextBridge.exposeInMainWorld('electron', electronAPI)
-    contextBridge.exposeInMainWorld('api', api)
     contextBridge.exposeInMainWorld('stash', stash)
   } catch (error) {
     console.error(error)
   }
 } else {
-  // @ts-ignore (define in dts)
-  window.electron = electronAPI
-  // @ts-ignore (define in dts)
-  window.api = api
-  // @ts-ignore (define in dts)
-  window.stash = stash
+  // index.d.ts augments Window for the renderer; this Node compile does not see that.
+  ;(window as unknown as { stash: StashApi }).stash = stash
 }
