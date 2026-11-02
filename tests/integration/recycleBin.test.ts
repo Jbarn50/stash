@@ -23,7 +23,7 @@ describe.runIf(process.platform === 'win32')('the Recycle Bin of this machine', 
   })
 
   test('the user SID is the one whoami reports', async () => {
-    expect(await getUserSid()).toMatch(/^S-1-5-21-/)
+    expect(await getUserSid()).toMatch(/^S-1-\d+(-\d+)+$/)
   })
 
   test('the bin folder is the drive, $Recycle.Bin and the user SID', async () => {

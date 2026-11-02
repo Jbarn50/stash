@@ -234,24 +234,27 @@ export async function getRecycleBinInfo(drive: string): Promise<RecycleBinInfo> 
 }
 
 /**
- * The newest record in the Recycle Bin folder `dir` for `originalPath` (compared as `pathKey` does)
- * that Windows wrote for a deletion since `sinceMs`, or null. Only `$I` files last written within a
- * minute before `sinceMs` are read, and only records deleted no more than two seconds before it
- * match. Unreadable and malformed `$I` files are skipped; so is a folder that cannot be read.
+ * The newest record for each of `originalPaths` in the Recycle Bin folder `dir` that Windows wrote
+ * for a deletion since `sinceMs`, keyed by `pathKey` of the requested path, so that `C:\A` and `c:/a`
+ * are one entry. A path with no record is left out. The folder is listed once and each `$I` file is
+ * read at most once, however many paths are asked for. Only `$I` files last written within a minute
+ * before `sinceMs` are read, and only records deleted no more than two seconds before it match.
+ * Unreadable and malformed `$I` files are skipped; a folder that cannot be read gives an empty map.
  */
-export async function findRecordIn(
+export async function findRecordsIn(
   dir: string,
-  originalPath: string,
+  originalPaths: string[],
   sinceMs: number
-): Promise<RecycledRecord | null> {
+): Promise<Map<string, RecycledRecord>> {
+  const found = new Map<string, RecycledRecord>()
+  const wanted = new Set(originalPaths.map(pathKey))
+  if (wanted.size === 0) return found
   let names: string[]
   try {
     names = await readdir(dir)
   } catch {
-    return null
+    return found
   }
-  const wanted = pathKey(originalPath)
-  let newest: RecycledRecord | null = null
   for (const iName of names) {
     if (!iName.startsWith('$I')) continue
     try {
@@ -259,33 +262,61 @@ export async function findRecordIn(
       if ((await stat(file)).mtimeMs < sinceMs - RECORD_WRITTEN_WINDOW_MS) continue
       const record = parseIRecord(await readFile(file))
       if (record.deletedAtMs < sinceMs - RECORD_DELETED_SLACK_MS) continue
-      if (pathKey(record.originalPath) !== wanted) continue
-      if (newest === null || record.deletedAtMs > newest.deletedAtMs) {
-        newest = {
+      const key = pathKey(record.originalPath)
+      if (!wanted.has(key)) continue
+      const newest = found.get(key)
+      if (newest === undefined || record.deletedAtMs > newest.deletedAtMs) {
+        found.set(key, {
           iName,
           rName: `$R${iName.slice(2)}`,
           originalPath: record.originalPath,
           deletedAtMs: record.deletedAtMs
-        }
+        })
       }
     } catch {
       // Unreadable, malformed, or removed since the listing: not a record that can be used.
     }
   }
-  return newest
+  return found
+}
+
+/** `findRecordsIn` for one path: its newest record in `dir`, or null. */
+export async function findRecordIn(
+  dir: string,
+  originalPath: string,
+  sinceMs: number
+): Promise<RecycledRecord | null> {
+  return (await findRecordsIn(dir, [originalPath], sinceMs)).get(pathKey(originalPath)) ?? null
 }
 
 /**
- * Finds the record Windows wrote when `originalPath` was recycled from `drive` since `sinceMs`, to
- * pair it with its `$R` item. Never rejects: whatever goes wrong, including an invalid drive, is null.
+ * Finds the records Windows wrote when `originalPaths` were recycled from `drive` since `sinceMs`,
+ * to pair each item with its `$R` entry: `recycleBinDir` and `findRecordsIn`, so one pass over the
+ * bin serves a whole batch. Look a path up with `pathKey`. Never rejects: whatever goes wrong,
+ * including an invalid drive, gives an empty map.
  */
+export async function findRecycledRecords(
+  drive: string,
+  originalPaths: string[],
+  sinceMs: number
+): Promise<Map<string, RecycledRecord>> {
+  try {
+    return await findRecordsIn(await recycleBinDir(drive), originalPaths, sinceMs)
+  } catch {
+    return new Map()
+  }
+}
+
+/** `findRecycledRecords` for one path. Never rejects: whatever goes wrong is null. */
 export async function findRecycledRecord(
   drive: string,
   originalPath: string,
   sinceMs: number
 ): Promise<RecycledRecord | null> {
   try {
-    return await findRecordIn(await recycleBinDir(drive), originalPath, sinceMs)
+    return (
+      (await findRecycledRecords(drive, [originalPath], sinceMs)).get(pathKey(originalPath)) ?? null
+    )
   } catch {
     return null
   }

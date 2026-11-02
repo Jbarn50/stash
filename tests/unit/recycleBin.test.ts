@@ -3,9 +3,11 @@ import { lstat, mkdir, mkdtemp, rm, symlink, utimes, writeFile } from 'node:fs/p
 import { tmpdir } from 'node:os'
 import { basename, dirname, isAbsolute, join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
+import { pathKey } from '../../src/core/paths'
 import {
   binStatus,
   findRecordIn,
+  findRecordsIn,
   parseMountvol,
   parseRegDwords,
   parseWhoamiSid,
@@ -18,9 +20,11 @@ type FsCall = 'lstat' | 'readdir' | 'stat' | 'readFile'
 // Two seams for things a temp folder cannot produce on demand. `execFile` is replaced, so no real
 // tool runs in this file (the integration tests run the real ones). The four fs calls below pass
 // through to the real disk unless a test overrides one path, to make it fail or to return a value.
+// Every call is also logged, so a test can say how often the code under test touched a path.
 const mocks = vi.hoisted(() => ({
   execFile: vi.fn(),
-  fsOverrides: new Map<string, () => unknown>()
+  fsOverrides: new Map<string, () => unknown>(),
+  fsCalls: [] as string[]
 }))
 
 vi.mock('node:child_process', () => ({ execFile: mocks.execFile }))
@@ -29,7 +33,9 @@ vi.mock('node:fs/promises', async (importOriginal) => {
   const wrap =
     (name: FsCall) =>
     async (...args: unknown[]): Promise<unknown> => {
-      const override = mocks.fsOverrides.get(`${name}:${String(args[0])}`)
+      const call = `${name}:${String(args[0])}`
+      mocks.fsCalls.push(call)
+      const override = mocks.fsOverrides.get(call)
       return override ? override() : (fs[name] as (...a: unknown[]) => Promise<unknown>)(...args)
     }
   return {
@@ -50,6 +56,9 @@ function failFs(call: FsCall, path: string, code: string): void {
 function stubFs(call: FsCall, path: string, value: unknown): void {
   mocks.fsOverrides.set(`${call}:${path}`, () => value)
 }
+/** The paths the code under test passed to one of the four fs calls, in call order. */
+const fsCallsTo = (call: FsCall): string[] =>
+  mocks.fsCalls.filter((c) => c.startsWith(`${call}:`)).map((c) => c.slice(call.length + 1))
 const fileOfSize = (size: number): Stats => ({ isDirectory: () => false, size }) as unknown as Stats
 
 let root: string
@@ -67,6 +76,7 @@ beforeEach(async () => {
 })
 afterEach(async () => {
   mocks.fsOverrides.clear()
+  mocks.fsCalls.length = 0
   mocks.execFile.mockReset()
   await rm(root, { recursive: true, force: true })
 })
@@ -283,34 +293,35 @@ describe('recycledBytes', () => {
   })
 })
 
+// For the record lookups below: the moment a batch starts, and one path to look for.
+const SINCE = Date.UTC(2026, 10, 1, 12, 0, 0)
+const PATH = 'C:\\Users\\jorda\\Música\\naïve 📁 写真.txt'
+
+// Writes a file (or makes a folder) in the bin and sets its modified time, so that no test depends
+// on the wall clock. The default is just after the batch started.
+async function putI(iName: string, content: Buffer | null, mtimeMs = SINCE + 500): Promise<void> {
+  const file = join(bin, iName)
+  if (content) await writeFile(file, content)
+  else await mkdir(file)
+  await utimes(file, new Date(mtimeMs), new Date(mtimeMs))
+}
+
+const validRecord = (): Buffer =>
+  makeIRecord({ originalSize: 1n, deletedAtMs: SINCE + 500, path: PATH })
+
+async function putRecord(
+  iName: string,
+  r: { path?: string; deletedAtMs?: number; mtimeMs?: number }
+): Promise<void> {
+  const record = makeIRecord({
+    originalSize: 10n,
+    deletedAtMs: r.deletedAtMs ?? SINCE + 500,
+    path: r.path ?? PATH
+  })
+  await putI(iName, record, r.mtimeMs)
+}
+
 describe('findRecordIn', () => {
-  const SINCE = Date.UTC(2026, 10, 1, 12, 0, 0)
-  const PATH = 'C:\\Users\\jorda\\Música\\naïve 📁 写真.txt'
-
-  // Writes a file (or makes a folder) in the bin and sets its modified time, so that no test depends
-  // on the wall clock. The default is just after the batch started.
-  async function putI(iName: string, content: Buffer | null, mtimeMs = SINCE + 500): Promise<void> {
-    const file = join(bin, iName)
-    if (content) await writeFile(file, content)
-    else await mkdir(file)
-    await utimes(file, new Date(mtimeMs), new Date(mtimeMs))
-  }
-
-  const validRecord = (): Buffer =>
-    makeIRecord({ originalSize: 1n, deletedAtMs: SINCE + 500, path: PATH })
-
-  async function putRecord(
-    iName: string,
-    r: { path?: string; deletedAtMs?: number; mtimeMs?: number }
-  ): Promise<void> {
-    const record = makeIRecord({
-      originalSize: 10n,
-      deletedAtMs: r.deletedAtMs ?? SINCE + 500,
-      path: r.path ?? PATH
-    })
-    await putI(iName, record, r.mtimeMs)
-  }
-
   test('finds the record of a path, whatever its case, slashes or \\\\?\\ prefix, and names the $R', async () => {
     await putRecord('$IA1B2C3.txt', {})
     await putRecord('$IZZZZZZ.txt', { path: 'C:\\Users\\jorda\\other.txt' })
@@ -399,6 +410,132 @@ describe('findRecordIn', () => {
     await putI('desktop.ini', validRecord())
     await putI('A$IA1B2C3.txt', validRecord())
     expect(await findRecordIn(bin, PATH, SINCE)).toBeNull()
+  })
+})
+
+describe('findRecordsIn', () => {
+  const SETUP = 'C:\\Users\\jorda\\Downloads\\setup.exe'
+  const NEVER = 'C:\\Users\\jorda\\never-recycled.txt'
+  const UNASKED = 'C:\\Users\\jorda\\Documents\\unasked.docx'
+
+  test.each([
+    ['sorts last', '$IAAAAAA.txt', '$IZZZZZZ.txt'],
+    ['sorts first', '$IZZZZZZ.txt', '$IAAAAAA.txt']
+  ])(
+    'gives each path its own newest match, keyed by pathKey, and leaves out a path with none (the newer record %s)',
+    async (_name, older, newer) => {
+      await putRecord(older, { deletedAtMs: SINCE + 1_000 })
+      await putRecord('$IMMMMMM.exe', { path: SETUP, deletedAtMs: SINCE + 2_000 })
+      await putRecord(newer, { deletedAtMs: SINCE + 3_000 })
+      // A fresh record of a path nobody asked for, the newest of all: it must not show up.
+      await putRecord('$IOTHER00.txt', { path: UNASKED, deletedAtMs: SINCE + 4_000 })
+      const asked = ['c:/users/JORDA/música/NAÏVE 📁 写真.TXT', SETUP, NEVER]
+
+      const found = await findRecordsIn(bin, asked, SINCE)
+
+      expect([...found.keys()].sort()).toEqual([pathKey(asked[0]), pathKey(SETUP)].sort())
+      expect(found.get(pathKey(PATH))).toEqual({
+        iName: newer,
+        rName: `$R${newer.slice(2)}`,
+        originalPath: PATH,
+        deletedAtMs: SINCE + 3_000
+      })
+      expect(found.get(pathKey(SETUP))).toEqual({
+        iName: '$IMMMMMM.exe',
+        rName: '$RMMMMMM.exe',
+        originalPath: SETUP,
+        deletedAtMs: SINCE + 2_000
+      })
+      expect(found.has(pathKey(NEVER))).toBe(false)
+    }
+  )
+
+  test('lists the folder once and reads each $I written within the minute once, however many paths are asked for', async () => {
+    const paths = Array.from({ length: 12 }, (_, i) => `C:\\Users\\jorda\\Downloads\\file-${i}.bin`)
+    const recent = paths.map((_, i) => `$I${String(i).padStart(6, '0')}.bin`)
+    for (const [i, path] of paths.entries()) {
+      await putRecord(recent[i], { path, deletedAtMs: SINCE + 100 * i })
+    }
+    await putRecord('$ISTALE00.bin', { path: paths[0], mtimeMs: SINCE - 61_000 })
+    await putI('desktop.ini', validRecord())
+
+    const found = await findRecordsIn(bin, paths, SINCE)
+
+    expect(found.size).toBe(12)
+    const inBin = (names: string[]): string[] => names.map((n) => join(bin, n)).sort()
+    expect(fsCallsTo('readdir')).toEqual([bin])
+    // Every $I file is asked its age, but only the recent ones are read, and each only once.
+    expect(fsCallsTo('stat').sort()).toEqual(inBin([...recent, '$ISTALE00.bin']))
+    expect(fsCallsTo('readFile').sort()).toEqual(inBin(recent))
+  })
+
+  test('looks for nothing, and touches nothing, when no path is asked for', async () => {
+    await putRecord('$IA1B2C3.txt', {})
+    expect(await findRecordsIn(bin, [], SINCE)).toEqual(new Map())
+    expect(mocks.fsCalls).toEqual([])
+  })
+
+  test('a path asked for twice, or in two spellings, is one entry', async () => {
+    await putRecord('$IA1B2C3.txt', {})
+    const asked = [PATH, PATH.toUpperCase(), 'c:/users/jorda/música/naïve 📁 写真.txt', PATH]
+    const found = await findRecordsIn(bin, asked, SINCE)
+    expect([...found.keys()]).toEqual([pathKey(PATH)])
+    expect(found.get(pathKey(PATH))).toMatchObject({ iName: '$IA1B2C3.txt', originalPath: PATH })
+  })
+
+  test('is an empty map when the folder is missing or cannot be listed', async () => {
+    expect(await findRecordsIn(join(root, 'not-there'), [PATH], SINCE)).toEqual(new Map())
+    failFs('readdir', bin, 'EPERM')
+    expect(await findRecordsIn(bin, [PATH], SINCE)).toEqual(new Map())
+  })
+
+  test('applies both windows to every record', async () => {
+    const at = (name: string): string => `C:\\Users\\jorda\\${name}.txt`
+    await putRecord('$IAAAAAA.txt', { path: at('written-too-early'), mtimeMs: SINCE - 61_000 })
+    await putRecord('$IBBBBBB.txt', { path: at('written-in-time'), mtimeMs: SINCE - 59_000 })
+    await putRecord('$ICCCCCC.txt', { path: at('deleted-too-early'), deletedAtMs: SINCE - 2_001 })
+    await putRecord('$IDDDDDD.txt', {
+      path: at('deleted-just-in-time'),
+      deletedAtMs: SINCE - 2_000
+    })
+    const asked = [
+      'written-too-early',
+      'written-in-time',
+      'deleted-too-early',
+      'deleted-just-in-time'
+    ]
+
+    const found = await findRecordsIn(bin, asked.map(at), SINCE)
+
+    expect([...found.values()].map((r) => r.iName).sort()).toEqual(['$IBBBBBB.txt', '$IDDDDDD.txt'])
+  })
+
+  test('skips $I files that are malformed, truncated, version 1 or unreadable, and finds the rest', async () => {
+    const version1 = validRecord()
+    version1.writeBigInt64LE(1n, 0)
+    await putI('$IGARBAGE.txt', Buffer.from('this is not a record'))
+    await putI('$IVERSN1.txt', version1)
+    await putI('$ITRUNCD.txt', validRecord().subarray(0, validRecord().length - 2))
+    await putI('$IEMPTY0.txt', Buffer.alloc(0))
+    await putI('$IAFOLDER', null) // a folder: reading it fails
+    await putRecord('$IGOODAAA.txt', {})
+    await putRecord('$IGOODBBB.exe', { path: SETUP })
+    await putRecord('$IGOODCCC.txt', { path: NEVER })
+    failFs('readFile', join(bin, '$IGOODCCC.txt'), 'EPERM')
+
+    const found = await findRecordsIn(bin, [PATH, SETUP, NEVER], SINCE)
+
+    expect([...found.values()].map((r) => r.iName).sort()).toEqual([
+      '$IGOODAAA.txt',
+      '$IGOODBBB.exe'
+    ])
+  })
+
+  test('looks only at $I files', async () => {
+    await putI('$RA1B2C3.txt', validRecord())
+    await putI('desktop.ini', validRecord())
+    await putI('A$IA1B2C3.txt', validRecord())
+    expect(await findRecordsIn(bin, [PATH], SINCE)).toEqual(new Map())
   })
 })
 
@@ -702,5 +839,74 @@ describe('with the Windows tools faked', () => {
         expect(mocks.execFile).not.toHaveBeenCalled()
       }
     )
+
+    test('is null, not an error, for a path that is not a string', async () => {
+      const { findRecycledRecord } = await boot()
+      expect(await findRecycledRecord('C:', undefined as unknown as string, Date.now())).toBeNull()
+    })
+  })
+
+  describe('findRecycledRecords', () => {
+    const ALBUM = 'C:\\Users\\jorda\\Música\\naïve 📁 写真.txt'
+    const SETUP = 'C:\\Users\\jorda\\Downloads\\setup.exe'
+
+    test('looks once in the user bin folder of the drive, for every path', async () => {
+      const { findRecycledRecords } = await boot()
+      const deletedAtMs = Date.now()
+      stubFs('readdir', BIN, ['$IAB12CD.txt', '$RAB12CD.txt', '$IEF34GH.exe', '$REF34GH.exe'])
+      for (const [iName, path] of [
+        ['$IAB12CD.txt', ALBUM],
+        ['$IEF34GH.exe', SETUP]
+      ]) {
+        stubFs('stat', join(BIN, iName), { mtimeMs: deletedAtMs })
+        stubFs('readFile', join(BIN, iName), makeIRecord({ originalSize: 5n, deletedAtMs, path }))
+      }
+
+      const asked = [ALBUM.toUpperCase(), SETUP, 'C:\\Users\\jorda\\never-recycled.txt']
+      const found = await findRecycledRecords('c:', asked, deletedAtMs - 10)
+
+      expect(found).toEqual(
+        new Map([
+          [
+            pathKey(ALBUM),
+            { iName: '$IAB12CD.txt', rName: '$RAB12CD.txt', originalPath: ALBUM, deletedAtMs }
+          ],
+          [
+            pathKey(SETUP),
+            { iName: '$IEF34GH.exe', rName: '$REF34GH.exe', originalPath: SETUP, deletedAtMs }
+          ]
+        ])
+      )
+      expect(fsCallsTo('readdir')).toEqual([BIN])
+    })
+
+    test('is an empty map, and never an error, when it cannot look', async () => {
+      const { findRecycledRecords } = await boot()
+      expect(await findRecycledRecords('C:', [ALBUM], Date.now())).toEqual(new Map()) // empty bin
+      failFs('readdir', BIN, 'ENOENT')
+      expect(await findRecycledRecords('C:', [ALBUM], Date.now())).toEqual(new Map()) // no folder
+      failFs('readdir', BIN, 'EPERM')
+      expect(await findRecycledRecords('C:', [ALBUM], Date.now())).toEqual(new Map()) // no access
+    })
+
+    test('is an empty map when the user SID is unknown', async () => {
+      const { findRecycledRecords } = await boot({ sid: new Error('whoami failed') })
+      expect(await findRecycledRecords('C:', [ALBUM], Date.now())).toEqual(new Map())
+    })
+
+    test.each(['', 'C', 'C:\\', '\\\\srv\\share'])(
+      'is an empty map for the invalid drive %j, without starting any process',
+      async (drive) => {
+        const { findRecycledRecords } = await boot()
+        expect(await findRecycledRecords(drive, [ALBUM], Date.now())).toEqual(new Map())
+        expect(mocks.execFile).not.toHaveBeenCalled()
+      }
+    )
+
+    test('is an empty map, not an error, for a path that is not a string', async () => {
+      const { findRecycledRecords } = await boot()
+      const garbage = [undefined as unknown as string]
+      expect(await findRecycledRecords('C:', garbage, Date.now())).toEqual(new Map())
+    })
   })
 })
