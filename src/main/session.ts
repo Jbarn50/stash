@@ -4,10 +4,10 @@ import {
   type HashGroup,
   type SizeGroup
 } from '../core/detectors/duplicates'
+import { isExcluded } from '../core/detectors/index'
 import { errorMessage } from '../core/errorMessage'
 import { buildSummary, summarizeFindings } from '../core/findings'
 import { suggestKeeper } from '../core/keeper'
-import { isSameOrInside } from '../core/paths'
 import type { ScanProgressPayload } from '../core/scan/scanTree'
 import { ScanTree } from '../core/tree'
 import type {
@@ -188,15 +188,14 @@ export class ScanSession {
   }
 
   /**
-   * Drops the findings that lie inside one of the exclusions. Duplicate groups are tidied as
+   * Drops the findings that touch one of the exclusions: those inside an excluded folder, and folders
+   * with an excluded folder inside them (see isExcluded). Duplicate groups are tidied as
    * removeFindings does.
    */
   applyExclusions(settings: Settings): void {
     const latest = this._latest
     if (!latest) return
-    const excluded = (path: string): boolean =>
-      settings.exclusions.some((exclusion) => isSameOrInside(path, exclusion))
-    const kept = latest.findings.filter((f) => !excluded(f.path))
+    const kept = latest.findings.filter((f) => !isExcluded(f, settings.exclusions))
     this.replaceFindings(latest, kept)
   }
 

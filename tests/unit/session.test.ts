@@ -734,6 +734,35 @@ describe('changing the results after a scan', () => {
     expect(h.session.resolveFindings([dropped])).toEqual({ ok: false, reason: 'unknown-finding' })
   })
 
+  test('applyExclusions drops a folder finding that contains an excluded folder, and keeps its sibling', async () => {
+    // Recycling old-dir would take the excluded folder inside it along.
+    const folder = (scanId: string, n: number, name: string): Finding =>
+      finding(scanId, 'temp-user', n, {
+        path: `C:\\Users\\jorda\\AppData\\Local\\Temp\\${name}`,
+        kind: 'folder'
+      })
+    const h = harness({
+      scan: async (job) =>
+        scanDone(job, {
+          findings: [folder(job.scanId, 0, 'old-dir'), folder(job.scanId, 1, 'other-dir')],
+          candidates: []
+        }),
+      hash: async () => []
+    })
+    const scanId = await h.runToDone()
+
+    h.session.applyExclusions(
+      validateSettings({ exclusions: ['C:\\Users\\jorda\\AppData\\Local\\Temp\\old-dir\\keep'] })
+    )
+
+    expect(idsOf(h.session)).toEqual([`${scanId}:temp-user:1`])
+    expect(h.session.latest!.summary).toMatchObject({ reclaimable: 2 * MiB })
+    expect(h.session.resolveFindings([`${scanId}:temp-user:0`])).toEqual({
+      ok: false,
+      reason: 'unknown-finding'
+    })
+  })
+
   test('removeFindings and applyExclusions do nothing before the first scan', () => {
     const h = harness()
     h.session.removeFindings(['abc:temp-user:0'])

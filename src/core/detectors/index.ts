@@ -8,9 +8,24 @@ import { detectSystem } from './system'
 import { detectTempCaches } from './tempCaches'
 
 /**
+ * True when cleaning the finding would touch an exclusion: it lies inside an excluded folder (or is
+ * one), or it is a folder with an excluded folder somewhere inside it, which would go along with it.
+ */
+export function isExcluded(
+  finding: Pick<Finding, 'path' | 'kind'>,
+  exclusions: readonly string[]
+): boolean {
+  return exclusions.some(
+    (excluded) =>
+      isSameOrInside(finding.path, excluded) ||
+      (finding.kind === 'folder' && isSameOrInside(excluded, finding.path))
+  )
+}
+
+/**
  * Every detector except duplicates, in order: a later detector skips what an earlier one claimed.
- * Afterwards, findings inside an exclusion are dropped, and so is any cleanable finding on a
- * blocked path (info findings sit in blocked places by nature and are never cleaned).
+ * Afterwards, findings that touch an exclusion (see isExcluded) are dropped, and so is any cleanable
+ * finding on a blocked path (info findings sit in blocked places by nature and are never cleaned).
  */
 export function runStaticDetectors(ctx: DetectorContext): Finding[] {
   const findings = [
@@ -21,7 +36,7 @@ export function runStaticDetectors(ctx: DetectorContext): Finding[] {
   ]
   return findings.filter(
     (f) =>
-      !ctx.settings.exclusions.some((excluded) => isSameOrInside(f.path, excluded)) &&
+      !isExcluded(f, ctx.settings.exclusions) &&
       (f.safety === 'info' || !isBlocked(f.path, ctx.env))
   )
 }

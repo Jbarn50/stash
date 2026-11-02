@@ -1,6 +1,6 @@
 import { expect, test } from 'vitest'
 import { createDetectorContext } from '../../src/core/detectors/context'
-import { runStaticDetectors } from '../../src/core/detectors/index'
+import { isExcluded, runStaticDetectors } from '../../src/core/detectors/index'
 import { RULES } from '../../src/core/rules/catalog'
 import { validateSettings } from '../../src/core/settings'
 import type { ScanTree } from '../../src/core/tree'
@@ -177,6 +177,69 @@ test('findings inside an exclusion are dropped', () => {
     validateSettings({ exclusions: ['c:/users/JORDA/downloads/keep/'] })
   )
   expect(findings.map((f) => f.path)).toEqual([`C:\\${DOWNLOADS}\\other.exe`])
+})
+
+test('a folder finding that contains an exclusion is dropped, though a sibling folder is not', () => {
+  // Recycling old-dir would take the excluded folder inside it along.
+  const tree = treeFrom('C:\\', {
+    [`${TEMP}\\old-dir`]: { dir: true, mtimeMs: now - 30 * HOUR },
+    [`${TEMP}\\old-dir\\keep\\a.bin`]: { size: 2 * MiB, mtimeMs: now - 25 * HOUR },
+    [`${TEMP}\\other-dir`]: { dir: true, mtimeMs: now - 30 * HOUR },
+    [`${TEMP}\\other-dir\\b.bin`]: { size: 2 * MiB, mtimeMs: now - 25 * HOUR }
+  })
+  const findings = detect(tree, validateSettings({ exclusions: [`C:\\${TEMP}\\old-dir\\keep`] }))
+  expect(findings.map((f) => f.path)).toEqual([`C:\\${TEMP}\\other-dir`])
+})
+
+// [whether it is excluded, what the finding is, the finding, the exclusions]
+test.each<[boolean, string, Pick<Finding, 'path' | 'kind'>, string[]]>([
+  [
+    true,
+    'a file inside an excluded folder',
+    { path: 'C:\\a\\keep\\x.txt', kind: 'file' },
+    ['C:\\a\\keep']
+  ],
+  [true, 'the excluded folder itself', { path: 'C:\\a\\keep', kind: 'folder' }, ['C:\\a\\keep']],
+  [
+    true,
+    'a folder with an excluded folder somewhere inside it',
+    { path: 'C:\\a', kind: 'folder' },
+    ['C:\\a\\b\\keep']
+  ],
+  [
+    true,
+    'a folder with an excluded folder inside it, spelled with other case and slashes',
+    { path: 'C:\\A', kind: 'folder' },
+    ['c:/a/B/KEEP/']
+  ],
+  [
+    true,
+    'a file under any one of several exclusions',
+    { path: 'C:\\a\\x', kind: 'file' },
+    ['C:\\z', 'C:\\a']
+  ],
+  [
+    false,
+    'a file, which cannot contain an exclusion',
+    { path: 'C:\\a\\f.txt', kind: 'file' },
+    ['C:\\a\\f.txt\\inner']
+  ],
+  [
+    false,
+    'a folder whose name only starts like the excluded one',
+    { path: 'C:\\a\\keep2', kind: 'folder' },
+    ['C:\\a\\keep']
+  ],
+  [
+    false,
+    'a folder whose name is only the start of the excluded one',
+    { path: 'C:\\a\\kee', kind: 'folder' },
+    ['C:\\a\\keep']
+  ],
+  [false, 'a folder beside the excluded one', { path: 'C:\\b', kind: 'folder' }, ['C:\\a\\keep']],
+  [false, 'no exclusions at all', { path: 'C:\\a', kind: 'folder' }, []]
+])('isExcluded is %s for %s', (excluded, _what, finding, exclusions) => {
+  expect(isExcluded(finding, exclusions)).toBe(excluded)
 })
 
 test('a rule match on a blocked path is dropped', () => {
