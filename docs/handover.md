@@ -11,14 +11,16 @@ Stash is a Windows desktop app (Electron 45 + TypeScript + React, built with ele
 - it moves what the user picks **to the Recycle Bin**. It never deletes anything permanently;
 - History can restore a cleanup.
 
-- **Repo:** `C:\Users\jorda\Software\stash`, branch **`feat/space-cleanup`**. Never work on `main`. HEAD is `0ed91a3`.
+- **Repo:** https://github.com/Jbarn50/stash (public). The default branch is **`feat/space-cleanup`**; never work on `main`. On the user's PC it lives at `C:\Users\jorda\Software\stash`.
+- **Screens (Tasks 15–18):** branch **`feat/space-cleanup-ui`** in the same repo: four commits on `ce64788`.
 - **Spec (the authority):** `docs/superpowers/specs/2026-11-01-space-cleanup-design.md`
 - **Plan (19 tasks):** `docs/superpowers/plans/2026-11-01-space-cleanup.md`
-- **Decision record:** `.superpowers/sdd/2026-11-01-space-cleanup/progress.md`. This ledger is git-ignored.
+- **Inputs for the remaining tasks:** `docs/handover/`, holding `task-13-brief.md`, `task-13-decisions.md`, `task-14-brief.md`, `task-14-decisions.md` and `task-19-brief.md`. Where a task's decisions differ from its brief, the decisions win.
+- **Decision record (the ledger):** kept on the user's PC only, not published. It is at `.superpowers/sdd/2026-11-01-space-cleanup/progress.md` and is git-ignored.
   - Every `Ruling:` line is a decision, with its cost if wrong.
   - `minor (deferred)` lines are small issues set aside for the final review.
   - `Note → Task N` lines are instructions carried to a later task.
-- **Per-task inputs:** the same folder holds each task's brief, decisions and report: `task-N-brief.md`, `task-N-decisions.md` and `task-N-report.md`.
+  - If you need a past decision, ask the user to paste the relevant lines.
 
 ## Status
 
@@ -28,7 +30,7 @@ Stash is a Windows desktop app (Electron 45 + TypeScript + React, built with ele
 | 12 Cleanup engine                               | Done and reviewed (built in a helper clone, cherry-picked as `1d93705`). Fix `307befd`: a kept duplicate counts only while it still matches the scan.                                          |
 | 13 Restore engine + real Recycle Bin round trip | Committed `0ed91a3`. Tests pass: 65 unit tests, and the round trip ran once, 5/5, leaving the bin unchanged. **Its code review was cut off by an API spend limit, so it is still unreviewed.** |
 | 14 IPC, preload, environment, elevation, wiring | **Not started**; the implementer stopped before writing anything. Its instructions are ready: `task-14-brief.md` and `task-14-decisions.md` (18 points plus amendments A–E).                   |
-| 15–18 Screens (renderer)                        | Built in the helper clone `C:\Users\jorda\Software\stash-ahead`, branch `feat/space-cleanup-ui`, commits `9c1e958 7fc7ac5 8f494e8 058091b` (on `ce64788`). Not yet brought in.                 |
+| 15–18 Screens (renderer)                        | Built on branch `feat/space-cleanup-ui`, commits `9c1e958 7fc7ac5 8f494e8 058091b` (on `ce64788`). Not yet brought in.                                                                         |
 | 19 E2E, installer, manual checks                | Installer settings and `docs/manual-checks.md` are done (`7c6738c`). The e2e round trip and final verification remain.                                                                         |
 | Final whole-branch review                       | Not started.                                                                                                                                                                                   |
 
@@ -51,7 +53,7 @@ The suite passes: 576 tests, plus the real-bin round trip (5). Typecheck is clea
    - Clean and scan never overlap.
    - The renderer receives all four rejection reasons, including `'incomplete-scan'`.
    - `npm run build` must emit both worker chunks (scan and hash) into `out/main`.
-3. **Bring in Tasks 15–18.** Run `git fetch C:\Users\jorda\Software\stash-ahead feat/space-cleanup-ui`, then cherry-pick the four commits.
+3. **Bring in Tasks 15–18.** Run `git fetch origin feat/space-cleanup-ui`, then cherry-pick the four commits.
    - On the `src/shared/ipc.ts` conflict, keep Task 14's version.
    - Delete `src/renderer/src/stash.d.ts`.
    - Remove the template's `window.electron`/`window.api` bridge, its `ping` handler and `components/Versions.tsx` (amendment A; spec §4.1 allows only `window.stash`).
@@ -98,6 +100,9 @@ The suite passes: 576 tests, plus the real-bin round trip (5). Typecheck is clea
 
 ## Where the decisions are
 
-- **This repo's ledger:** `.superpowers/sdd/2026-11-01-space-cleanup/progress.md`. Search it for `Ruling:`, `minor (deferred)` and `Note → Task`.
-- **The helper clone's ledger,** covering Tasks 12 and 15–18: `.superpowers/sdd/2026-11-01-space-cleanup/progress-ahead-snapshot.md`.
+- **The remaining tasks' briefs and decisions:** `docs/handover/` in the repo.
+- **The ledgers** (on the user's PC only, not published):
+  - this repo's `.superpowers/sdd/2026-11-01-space-cleanup/progress.md`;
+  - the helper clone's, covering Tasks 12 and 15–18, copied into the same folder as `progress-ahead-snapshot.md`.
+  - Search them for `Ruling:`, `minor (deferred)` and `Note → Task`; ask the user to paste what you need.
 - **The final report** to the user must list every ruling with its cost if wrong, and every deferred minor.
