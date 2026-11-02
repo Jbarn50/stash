@@ -19,7 +19,7 @@ Uninstall removes both links. It does not empty the Recycle Bin and it does not 
 
 `win.icon` is `build/icon.ico`. electron-builder embeds it in `Stash.exe` with rcedit. Because the shortcuts point at the exe, the desktop icon, the Start menu icon, the taskbar icon, and Alt-Tab all show that file.
 
-The `.ico` holds PNG images at 16, 20, 24, 32, 40, 48, 64, 96, 128, and 256. Sizes 24 and below are a drawn drawer-and-gauge, so a 100% taskbar still reads. Larger sizes are the full picture in `build/icon.png` (1024×1024).
+The `.ico` holds PNG images at 16, 20, 24, 32, 40, 48, 64, 96, 128, and 256. Every size is the same drawing: a bone disk on an indigo tile, a mint slice lifted out of the upper right, and a copper bolt latching the disk. At 24px and below the slice stays seated in the bite, so the gap does not collapse to nothing. `build/icon.png` is that drawing at 1024×1024.
 
 | File                                     | Used for                                                                           |
 | ---------------------------------------- | ---------------------------------------------------------------------------------- |
@@ -31,7 +31,7 @@ The `.ico` holds PNG images at 16, 20, 24, 32, 40, 48, 64, 96, 128, and 256. Siz
 
 `nsis.installerIcon` and `nsis.uninstallerIcon` are the same `.ico`, so Add/Remove Programs and the installer window match the exe.
 
-Regenerate the derived files after changing the master:
+The script draws every file above, including the 1024 master. Regenerate them with:
 
 ```bash
 python3 scripts/render-icon.py

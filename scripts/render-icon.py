@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-"""Build Stash's icon files from build/icon.png.
+"""Draw Stash's icon and write the files electron-builder ships.
 
-The 1024 master is the desktop, Start Menu, and installer art. Sizes 24px and
-below are a simpler drawer-and-gauge drawn here, because the full picture
-turns to mud at taskbar size. Run from the repo root:
+The mark is a bone disk on an indigo tile. A mint slice is lifted out of the
+upper right — space set aside, not thrown away — and a copper bolt latches
+what stays. It is not a drawer and not a chart in a box. Every size is this
+drawing. At 24px and below the slice stays seated, because a one-pixel gap
+vanishes. Run from the repo root:
 
     python3 scripts/render-icon.py
 """
@@ -11,20 +13,19 @@ turns to mud at taskbar size. Run from the repo root:
 from __future__ import annotations
 
 import io
+import math
 import struct
 from pathlib import Path
 
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFilter
 
 ROOT = Path(__file__).resolve().parents[1]
-MASTER_PATH = ROOT / "build" / "icon.png"
 
-# Sizes Windows actually asks the exe icon for, including a few DPI steps.
+# Sizes Windows asks an exe icon for, including a few DPI steps.
 ICO_SIZES = (16, 20, 24, 32, 40, 48, 64, 96, 128, 256)
-# Below this, ship the drawn mark instead of a scaled photograph.
-SIMPLE_MAX = 24
+# The floating gap is smaller than a pixel here, so the slice sits in the bite.
+SEATED_MAX = 24
 
-# OSTypes macOS reads as PNG. ic13/ic14 repeat 256 and 512 at a higher scale.
 ICNS_CHUNKS = (
     (b"ic07", 128),
     (b"ic08", 256),
@@ -36,62 +37,153 @@ ICNS_CHUNKS = (
     (b"ic14", 512),
 )
 
-TEAL = (16, 67, 70, 255)
-CREAM = (246, 230, 206, 255)
-WELL = (232, 214, 186, 255)
-GOLD = (196, 140, 48, 255)
-MINT = (90, 214, 158, 255)
-HANDLE = (173, 128, 57, 255)
+INDIGO = (28, 18, 72, 255)
+INDIGO_DEEP = (18, 10, 48, 255)
+BONE = (244, 232, 214, 255)
+BONE_RIM = (214, 190, 160, 255)
+MINT = (45, 214, 168, 255)
+MINT_DEEP = (16, 150, 118, 255)
+COPPER = (224, 138, 58, 255)
+COPPER_DEEP = (168, 88, 28, 255)
+
+# Pillow pies run clockwise from 3 o'clock. 268° is just past 12, 18° is just
+# under 3: a wide bite out of the upper right, not a thin chart sliver.
+WEDGE_START = 268
+WEDGE_END = 18
 
 
-def simple_mark(size: int) -> Image.Image:
-    """A drawer, a two-tone space ring, and a handle. Drawn large, then scaled."""
+def _along(angle: float, distance: float) -> tuple[float, float]:
+    radians = math.radians(angle)
+    return math.cos(radians) * distance, math.sin(radians) * distance
+
+
+def _wedge_mid() -> float:
+    sweep = (WEDGE_END - WEDGE_START) % 360
+    return (WEDGE_START + sweep / 2) % 360
+
+
+def draw_mark(size: int) -> Image.Image:
+    """One Stash mark at `size` pixels. Drawn several times larger, then scaled."""
     scale = 8
     canvas = size * scale
     image = Image.new("RGBA", (canvas, canvas), (0, 0, 0, 0))
     draw = ImageDraw.Draw(image)
-    margin = int(canvas * 0.045)
+
+    def px(fraction: float) -> int:
+        return int(round(fraction * canvas))
+
+    margin = px(0.05)
+    radius = px(0.23)
     draw.rounded_rectangle(
         [margin, margin, canvas - margin - 1, canvas - margin - 1],
-        radius=int(canvas * 0.22),
-        fill=TEAL,
+        radius=radius,
+        fill=INDIGO,
     )
+
+    center = (px(0.47), px(0.49))
+    disk_r = px(0.275)
+    # How far the slice travels along its bisector. Zero keeps it in the bite.
+    lift = 0.0 if size <= SEATED_MAX else 0.085 if size >= 48 else 0.055
+    offset = _along(_wedge_mid(), px(lift))
+    shard_center = (center[0] + offset[0], center[1] + offset[1])
+
+    shadow = Image.new("RGBA", (canvas, canvas), (0, 0, 0, 0))
+    shadow_draw = ImageDraw.Draw(shadow)
+    shade = (8, 4, 24, 90)
+    disk_box = [center[0] - disk_r, center[1] - disk_r, center[0] + disk_r, center[1] + disk_r]
+    shadow_draw.ellipse([v + px(0.012) for v in disk_box], fill=shade)
+    if lift > 0:
+        shard_box_shadow = [
+            shard_center[0] - disk_r,
+            shard_center[1] - disk_r,
+            shard_center[0] + disk_r,
+            shard_center[1] + disk_r,
+        ]
+        shadow_draw.pieslice(
+            [v + px(0.01) for v in shard_box_shadow],
+            start=WEDGE_START,
+            end=WEDGE_END,
+            fill=shade,
+        )
+    shadow = shadow.filter(ImageFilter.GaussianBlur(radius=max(1, px(0.018))))
+    image.alpha_composite(shadow)
+    draw = ImageDraw.Draw(image)
+
+    rim = max(1, px(0.012)) if size >= 32 else 0
+    if rim:
+        draw.ellipse(
+            [disk_box[0] - rim, disk_box[1] - rim, disk_box[2] + rim, disk_box[3] + rim],
+            fill=BONE_RIM,
+        )
+    draw.ellipse(disk_box, fill=BONE)
+    # The bite. Plate color, so the disk reads as missing a piece.
+    draw.pieslice(disk_box, start=WEDGE_START, end=WEDGE_END, fill=INDIGO)
+
+    shard_box = [
+        shard_center[0] - disk_r,
+        shard_center[1] - disk_r,
+        shard_center[0] + disk_r,
+        shard_center[1] + disk_r,
+    ]
+    draw.pieslice(shard_box, start=WEDGE_START, end=WEDGE_END, fill=MINT)
+    # The cut face of the slice, a darker band so the piece has an edge.
+    if size >= 32:
+        face = px(0.045)
+        draw.pieslice(
+            [
+                shard_center[0] - face,
+                shard_center[1] - face,
+                shard_center[0] + face,
+                shard_center[1] + face,
+            ],
+            start=WEDGE_START,
+            end=WEDGE_END,
+            fill=MINT_DEEP,
+        )
+
+    # Spindle. Skipped when it would be a single muddy pixel.
+    if size >= 24:
+        hole = px(0.048)
+        draw.ellipse(
+            [center[0] - hole, center[1] - hole, center[0] + hole, center[1] + hole],
+            fill=INDIGO_DEEP,
+        )
+        if size >= 48:
+            pip = max(1, px(0.016))
+            draw.ellipse(
+                [center[0] - pip, center[1] - pip, center[0] + pip, center[1] + pip],
+                fill=COPPER,
+            )
+
+    # Copper bolt across the lower disk, knob past the rim. This is the latch.
+    bar_top = px(0.60)
+    bar_bottom = px(0.685)
+    bar_left = px(0.24)
+    bar_right = px(0.73)
+    knob_r = px(0.058)
+    knob = (px(0.73), (bar_top + bar_bottom) // 2)
     draw.rounded_rectangle(
-        [int(canvas * 0.16), int(canvas * 0.20), int(canvas * 0.84), int(canvas * 0.82)],
-        radius=int(canvas * 0.09),
-        fill=CREAM,
+        [bar_left, bar_top, bar_right, bar_bottom],
+        radius=(bar_bottom - bar_top) // 2,
+        fill=COPPER_DEEP,
     )
+    inset = max(1, (bar_bottom - bar_top) // 7)
     draw.rounded_rectangle(
-        [int(canvas * 0.24), int(canvas * 0.28), int(canvas * 0.76), int(canvas * 0.60)],
-        radius=int(canvas * 0.05),
-        fill=WELL,
+        [bar_left, bar_top, bar_right - knob_r // 2, bar_top + inset * 3],
+        radius=inset,
+        fill=COPPER,
     )
-    center_x = canvas // 2
-    center_y = int(canvas * 0.445)
-    outer = int(canvas * 0.145)
-    inner = int(canvas * 0.082)
-    ring = [center_x - outer, center_y - outer, center_x + outer, center_y + outer]
-    draw.ellipse(ring, fill=GOLD)
-    # Pillow measures pies from 3 o'clock, clockwise. 200–330 is the left side.
-    draw.pieslice(ring, start=200, end=330, fill=MINT)
     draw.ellipse(
-        [center_x - inner, center_y - inner, center_x + inner, center_y + inner],
-        fill=WELL,
+        [knob[0] - knob_r, knob[1] - knob_r, knob[0] + knob_r, knob[1] + knob_r],
+        fill=COPPER_DEEP,
     )
-    handle_top = int(canvas * 0.665)
-    handle_bottom = int(canvas * 0.745)
-    draw.rounded_rectangle(
-        [int(canvas * 0.34), handle_top, int(canvas * 0.66), handle_bottom],
-        radius=(handle_bottom - handle_top) // 2,
-        fill=HANDLE,
+    inner = max(1, knob_r - px(0.016))
+    draw.ellipse(
+        [knob[0] - inner, knob[1] - inner, knob[0] + inner, knob[1] + inner],
+        fill=COPPER,
     )
+
     return image.resize((size, size), Image.Resampling.LANCZOS)
-
-
-def frame(master: Image.Image, size: int) -> Image.Image:
-    if size <= SIMPLE_MAX:
-        return simple_mark(size)
-    return master.resize((size, size), Image.Resampling.LANCZOS)
 
 
 def write_ico(path: Path, frames: list[Image.Image]) -> None:
@@ -122,18 +214,15 @@ def write_icns(path: Path, master: Image.Image) -> None:
 
 
 def main() -> None:
-    master = Image.open(MASTER_PATH).convert("RGBA")
-    if master.size != (1024, 1024):
-        raise SystemExit(f"{MASTER_PATH} must be 1024x1024, got {master.size}")
-
-    frames = [frame(master, size) for size in ICO_SIZES]
+    master = draw_mark(1024)
+    master.save(ROOT / "build" / "icon.png")
+    frames = [draw_mark(size) for size in ICO_SIZES]
     write_ico(ROOT / "build" / "icon.ico", frames)
     write_icns(ROOT / "build" / "icon.icns", master)
-    master.resize((512, 512), Image.Resampling.LANCZOS).save(ROOT / "resources" / "icon.png")
-    mark = ROOT / "src" / "renderer" / "src" / "assets" / "stash-mark.png"
-    master.resize((256, 256), Image.Resampling.LANCZOS).save(mark)
+    draw_mark(512).save(ROOT / "resources" / "icon.png")
+    draw_mark(256).save(ROOT / "src" / "renderer" / "src" / "assets" / "stash-mark.png")
     print(f"ico sizes: {ICO_SIZES}")
-    print("wrote build/icon.ico, build/icon.icns, resources/icon.png, stash-mark.png")
+    print("wrote build/icon.png, build/icon.ico, build/icon.icns, resources/icon.png, stash-mark.png")
 
 
 if __name__ == "__main__":
