@@ -16,6 +16,11 @@ const POWERSHELL = join(
 // and `$I` entries the same way. The path is in the environment of the process, not in the script
 // or on the command line, so no character in it can change what the script does. The dialogs are
 // switched off except for errors.
+//
+// Do not use this on anything but small files a test made. 'OnlyErrorDialogs' also answers "yes"
+// to every confirmation (FOF_NOCONFIRMATION), so an item Windows finds too big for the bin, or one on
+// a drive whose bin is off, is deleted for good without asking. The round-trip test only hands it a
+// few KB of its own files, after it has checked that the drive's bin is on.
 const sendToRecycleBin = (method: 'DeleteDirectory' | 'DeleteFile'): string =>
   `[Microsoft.VisualBasic.FileIO.FileSystem]::${method}($env:STASH_RECYCLE_PATH, 'OnlyErrorDialogs', 'SendToRecycleBin')`
 

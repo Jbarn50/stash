@@ -8,11 +8,11 @@ import { restoreBatch, restoredName, type RestoreDeps } from '../../src/main/res
 import type { CleanupBatch, CleanupItemRecord } from '../../src/shared/types'
 import { makeIRecord } from '../helpers/iRecord'
 
-// `lstat`, `mkdir`, `rename` and `unlink` pass through to the real disk unless a test overrides one
+// `lstat`, `mkdir`, `link`, `rename` and `unlink` pass through to the real disk unless a test overrides one
 // path. A temp folder cannot make them fail on demand, and a test needs that to see what happens
 // when Windows refuses one step. Everything else uses real files in a temp folder that plays the
 // part of the Recycle Bin: the real bin is only touched by the round-trip test.
-// Whatever the code under test works out, `mkdir`, `rename` and `unlink` refuse a path outside
+// Whatever the code under test works out, `mkdir`, `link`, `rename` and `unlink` refuse a path outside
 // that temp folder (`sandbox.root`), so a wrong name can never put a file anywhere else.
 const fsStubs = vi.hoisted(() => new Map<string, () => unknown>())
 const sandbox = vi.hoisted(() => ({ root: '' }))
@@ -23,7 +23,7 @@ vi.mock('node:fs/promises', async (importOriginal) => {
     return p === r || p.startsWith(`${r}\\`)
   }
   const wrap =
-    (name: 'lstat' | 'mkdir' | 'rename' | 'unlink') =>
+    (name: 'lstat' | 'mkdir' | 'link' | 'rename' | 'unlink') =>
     async (...args: unknown[]): Promise<unknown> => {
       for (const arg of name === 'lstat' ? [] : args) {
         if (typeof arg === 'string' && !inside(arg)) {
@@ -37,6 +37,7 @@ vi.mock('node:fs/promises', async (importOriginal) => {
     ...fs,
     lstat: wrap('lstat'),
     mkdir: wrap('mkdir'),
+    link: wrap('link'),
     rename: wrap('rename'),
     unlink: wrap('unlink')
   }
@@ -143,7 +144,11 @@ function batchOf(...items: CleanupItemRecord[]): CleanupBatch {
 }
 
 const errno = (code: string, message = code): Error => Object.assign(new Error(message), { code })
-function failFs(call: 'lstat' | 'mkdir' | 'rename' | 'unlink', path: string, error: Error): void {
+function failFs(
+  call: 'lstat' | 'mkdir' | 'link' | 'rename' | 'unlink',
+  path: string,
+  error: Error
+): void {
   fsStubs.set(`${call}:${path}`, () => {
     throw error
   })
@@ -641,12 +646,12 @@ test.each([
   ['EACCES', 'EACCES: permission denied, lstat'],
   ['ENOTDIR', 'ENOTDIR: not a directory, lstat']
 ])(
-  'when it cannot be told whether the original path is free (%s), nothing is moved',
+  "when it cannot be told whether a folder's original path is free (%s), nothing is moved",
   async (code, message) => {
     // rename replaces a file that is in its way, so an unknown answer must never count as "free".
-    const original = join(root, 'orig', 'photo.jpg')
+    const original = join(root, 'orig', 'cache-dir')
     await mkdir(dirname(original))
-    const item = await recycled(original)
+    const item = await recycled(original, 'folder')
     failFs('lstat', original, errno(code, message))
     const h = harness()
 
@@ -673,9 +678,9 @@ test('a parent folder that cannot be made fails the item and leaves $R and $I al
   expect(stillInBin(item)).toBe(true)
 })
 
-test('a move that fails fails the item, and its $I record stays for the next try', async () => {
-  const original = join(root, 'orig', 'photo.jpg')
-  const item = await recycled(original)
+test('a folder move that fails fails the item, and its $I record stays for the next try', async () => {
+  const original = join(root, 'orig', 'cache-dir')
+  const item = await recycled(original, 'folder')
   failFs('rename', rOf(item), errno('EPERM', 'EPERM: operation not permitted, rename'))
   const h = harness()
 
@@ -772,4 +777,215 @@ test('a log that cannot be written rejects the restore, and what was moved stays
 
   expect(await readFile(original, 'utf8')).toBe('pixels')
   expect(readdirSync(bin)).toEqual([])
+})
+
+// ---- a file comes back through a hard link -------------------------------------------------------
+// rename replaces a file that is in its way, and a check made before it can be out of date by the
+// time it runs. A hard link is never made over anything: it fails with EEXIST instead. So a file
+// item is linked to its target, and only then is its `$R` name removed.
+
+test('a file that appears at the original path after any check is never replaced', async () => {
+  const original = join(root, 'orig', 'photo.jpg')
+  await put(original, 'written just now')
+  const item = await recycled(original, 'file', 'the old file')
+  // Whatever looks first is told the path is free, as it would be just before the other file came.
+  fsStubs.set(`lstat:${original}`, () => {
+    throw errno('ENOENT')
+  })
+  const h = harness()
+
+  const record = await restoreBatch(batchOf(item), h.deps)
+
+  const copy = join(root, 'orig', 'photo (restored).jpg')
+  expect(await readFile(original, 'utf8')).toBe('written just now')
+  expect(record.items).toStrictEqual([
+    { originalPath: original, status: 'restored', restoredTo: copy }
+  ])
+  expect(await readFile(copy, 'utf8')).toBe('the old file')
+  expect(readdirSync(bin)).toEqual([])
+})
+
+test('a file is linked to its target and never renamed onto it', async () => {
+  const original = join(root, 'orig', 'photo.jpg')
+  const item = await recycled(original, 'file', 'pixels')
+  failFs('rename', rOf(item), errno('EPERM', 'rename must not be used for a file'))
+  const h = harness()
+
+  const record = await restoreBatch(batchOf(item), h.deps)
+
+  expect(record.items).toStrictEqual([
+    { originalPath: original, status: 'restored', restoredTo: original }
+  ])
+  expect(await readFile(original, 'utf8')).toBe('pixels')
+  expect(lstatSync(original).nlink).toBe(1) // the $R name is gone, so this is its only name
+  expect(readdirSync(bin)).toEqual([])
+})
+
+test('the $I record is removed only once the $R name of a file is gone', async () => {
+  const original = join(root, 'orig', 'photo.jpg')
+  const item = await recycled(original, 'file', 'pixels')
+  const seen: boolean[] = []
+  fsStubs.set(`unlink:${iOf(item)}`, () => {
+    seen.push(existsSync(original) && !existsSync(rOf(item)))
+    return undefined
+  })
+  const h = harness()
+
+  await restoreBatch(batchOf(item), h.deps)
+
+  expect(seen).toEqual([true])
+})
+
+test.each([
+  ['EXDEV', 'EXDEV: cross-device link not permitted, link'],
+  ['ENOTSUP', 'ENOTSUP: operation not supported on socket, link'],
+  ['EISDIR', 'EISDIR: illegal operation on a directory, link'],
+  ['ENOSYS', 'ENOSYS: function not implemented, link']
+])(
+  'a drive that cannot make a hard link (%s) fails the file safely, and moves nothing',
+  async (code, message) => {
+    // FAT32 and exFAT have no hard links. Falling back to rename would bring the race back, so the
+    // item fails and stays in the bin, where Explorer's own Restore can still put it back.
+    const original = join(root, 'orig', 'photo.jpg')
+    const item = await recycled(original, 'file', 'pixels')
+    failFs('link', rOf(item), errno(code, message))
+    const h = harness()
+
+    const record = await restoreBatch(batchOf(item), h.deps)
+
+    expect(record.items).toStrictEqual([
+      {
+        originalPath: original,
+        status: 'failed',
+        reason:
+          "this drive can't put a file back without risk to a file in its place; restore it from the Recycle Bin in Explorer: " +
+          message
+      }
+    ])
+    expect(stillInBin(item)).toBe(true)
+    expect(existsSync(original)).toBe(false)
+  }
+)
+
+test('a link that fails any other way fails the file with the message, and moves nothing', async () => {
+  const original = join(root, 'orig', 'photo.jpg')
+  const item = await recycled(original)
+  failFs('link', rOf(item), errno('EACCES', 'EACCES: permission denied, link'))
+  const h = harness()
+
+  const record = await restoreBatch(batchOf(item), h.deps)
+
+  expect(record.items).toStrictEqual([
+    { originalPath: original, status: 'failed', reason: 'EACCES: permission denied, link' }
+  ])
+  expect(stillInBin(item)).toBe(true)
+  expect(existsSync(original)).toBe(false)
+})
+
+test('a $R name that cannot be removed after the link keeps the $I record, and says so', async () => {
+  // The file is back under its own path and still in the bin under its $R name: one file, two
+  // names. Removing the $I record now would leave an entry Explorer cannot show, so it stays.
+  const original = join(root, 'orig', 'photo.jpg')
+  const item = await recycled(original, 'file', 'pixels')
+  failFs('unlink', rOf(item), errno('EBUSY', 'EBUSY: resource busy or locked, unlink'))
+  const h = harness()
+
+  const record = await restoreBatch(batchOf(item), h.deps)
+
+  expect(record.items).toStrictEqual([
+    {
+      originalPath: original,
+      status: 'restored',
+      restoredTo: original,
+      reason:
+        "restored, but Stash couldn't take it out of the Recycle Bin: EBUSY: resource busy or locked, unlink"
+    }
+  ])
+  expect(await readFile(original, 'utf8')).toBe('pixels')
+  expect(stillInBin(item)).toBe(true)
+})
+
+test('a $R name already gone after the link is not a problem', async () => {
+  const original = join(root, 'orig', 'photo.jpg')
+  const item = await recycled(original, 'file', 'pixels')
+  fsStubs.set(`unlink:${rOf(item)}`, () => {
+    throw errno('ENOENT')
+  })
+  const h = harness()
+
+  const record = await restoreBatch(batchOf(item), h.deps)
+
+  expect(record.items).toStrictEqual([
+    { originalPath: original, status: 'restored', restoredTo: original }
+  ])
+  expect(existsSync(iOf(item))).toBe(false)
+})
+
+test('a $R that is a link to a folder is moved back as it is, not hard-linked', async () => {
+  const original = join(root, 'orig', 'shortcut-dir')
+  await mkdir(dirname(original), { recursive: true })
+  const item = await recycled(original, 'folder')
+  await rm(rOf(item), { recursive: true })
+  await mkdir(join(root, 'pointed-at'))
+  await symlink(join(root, 'pointed-at'), rOf(item), 'junction')
+  const h = harness()
+
+  const record = await restoreBatch(batchOf(item), h.deps)
+
+  expect(record.items).toStrictEqual([
+    { originalPath: original, status: 'restored', restoredTo: original }
+  ])
+  expect(lstatSync(original).isSymbolicLink()).toBe(true)
+  expect(readdirSync(bin)).toEqual([])
+  await unlink(original) // the junction only, before the tree goes
+})
+
+test('a folder makes its parent first, then checks its target, then moves', async () => {
+  const original = join(root, 'gone', 'cache-dir')
+  const item = await recycled(original, 'folder')
+  const order: string[] = []
+  const real = await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises')
+  fsStubs.set(`mkdir:${dirname(original)}`, () => {
+    order.push('mkdir')
+    return real.mkdir(dirname(original), { recursive: true })
+  })
+  fsStubs.set(`lstat:${original}`, () => {
+    order.push('lstat')
+    return real.lstat(original)
+  })
+  fsStubs.set(`rename:${rOf(item)}`, () => {
+    order.push('rename')
+    return real.rename(rOf(item), original)
+  })
+  const h = harness()
+
+  const record = await restoreBatch(batchOf(item), h.deps)
+
+  expect(order).toEqual(['mkdir', 'lstat', 'rename'])
+  expect(record.items[0].status).toBe('restored')
+})
+
+// ---- what the log may point at ------------------------------------------------------------------
+
+test.each([
+  ['a drive-relative path', 'C:photo.jpg'],
+  ['a relative path', 'orig\\photo.jpg'],
+  ['a rooted path with no drive', '\\orig\\photo.jpg'],
+  ['a network path', '\\\\server\\share\\photo.jpg'],
+  ['a device path', '\\\\?\\C:\\orig\\photo.jpg'],
+  ['a stream', 'C:\\orig\\photo.jpg:hidden'],
+  ['a place inside a Recycle Bin', 'C:\\$Recycle.Bin\\S-1-5-21-1\\photo.jpg'],
+  ['the Recycle Bin itself, in another case', 'c:\\$RECYCLE.BIN'],
+  ['an empty path', '']
+])('an original path Stash cannot restore to is refused: %s', async (_what, originalPath) => {
+  const item = { ...(await recycled(join(root, 'orig', 'photo.jpg'))), originalPath }
+  const h = harness()
+
+  const record = await restoreBatch(batchOf(item), h.deps)
+
+  expect(record.items).toStrictEqual([
+    { originalPath, status: 'failed', reason: "the path in the log isn't one Stash can restore to" }
+  ])
+  expect(h.binDir).not.toHaveBeenCalled()
+  expect(stillInBin(item)).toBe(true)
 })
