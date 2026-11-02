@@ -103,10 +103,10 @@ test('startupScanRoot takes a valid --scan= root and ignores anything else', () 
 
 test('channels: stash:<name> for each invoke method, and the two event channels', () => {
   for (const name of INVOKE_NAMES) expect(CHANNELS[name]).toBe(`stash:${name}`)
-  expect(INVOKE_NAMES).toHaveLength(17)
+  expect(INVOKE_NAMES).toHaveLength(22)
   expect(CHANNELS.onSessionEvent).toBe('stash:session-event')
   expect(CHANNELS.onCleanProgress).toBe('stash:clean-progress')
-  expect(new Set(Object.values(CHANNELS)).size).toBe(19)
+  expect(new Set(Object.values(CHANNELS)).size).toBe(24)
 })
 
 test('the forwarder sends to a live window and never throws', () => {

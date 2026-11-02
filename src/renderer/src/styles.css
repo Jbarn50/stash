@@ -160,6 +160,14 @@ select {
   font-weight: 600;
 }
 
+.module + .module {
+  margin-top: 6px;
+}
+
+.module[aria-current='page'] {
+  outline: 2px solid var(--accent);
+}
+
 .content {
   display: flex;
   flex-direction: column;
@@ -568,4 +576,49 @@ table.list tr.clickable:hover {
   gap: 10px;
   align-items: center;
   margin: 6px 0;
+}
+
+.undo-bar {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  margin: 12px 20px 0;
+  padding: 10px 12px;
+  background: var(--badge-review);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.project-layout {
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr) 240px;
+  gap: 12px;
+  align-items: start;
+}
+
+.project-layout .field {
+  grid-template-columns: 1fr;
+}
+
+.project-tree,
+.project-tree ul {
+  list-style: none;
+  padding: 0;
+  margin: 8px 0;
+}
+
+.project-tree ul {
+  padding-left: 12px;
+}
+
+.photo-well {
+  border: 1px dashed var(--border);
+  min-height: 120px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  color: var(--muted);
+  padding: 12px;
+  margin: 12px 0;
 }

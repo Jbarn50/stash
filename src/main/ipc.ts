@@ -1,8 +1,11 @@
 import { dialog, ipcMain, type BrowserWindow, type IpcMainInvokeEvent } from 'electron'
+import { requireFeature } from '../core/features'
 import { isPlainDrivePath, normalizePath, pathKey } from '../core/paths'
 import type { ScanTree } from '../core/tree'
 import { buildFolderView } from '../core/view'
 import { CHANNELS, INVOKE_NAMES, type StashApi, type StashInvokeName } from '../shared/ipc'
+import { BRANCH_KINDS, type BranchKind, type ProjectTree } from '../shared/projects'
+import { latestUndoTarget } from '../shared/undoTarget'
 import type {
   CleanOutcome,
   CleanupBatch,
@@ -12,6 +15,7 @@ import type {
   Overview,
   RestoreRecord,
   Settings,
+  UndoOutcome,
   ViewNode,
   WinEnv
 } from '../shared/types'
@@ -22,6 +26,7 @@ import { relaunchElevated } from './elevate'
 import type { LiveSettings } from './liveSettings'
 import { driveRoots, getDriveUsage } from './overview'
 import { findRecycledRecords, getRecycleBinInfo, recycleBinDir } from './recycleBin'
+import { ProjectsStore } from './projectsStore'
 import { restoreBatch, type RestoreDeps } from './restore'
 import type { ScanSession } from './session'
 import * as systemActions from './systemActions'
@@ -79,6 +84,29 @@ export function parseBoolean(x: unknown): boolean {
 export function parseBatchId(x: unknown): string {
   if (typeof x !== 'string' || x.length === 0 || x.length > MAX_ID_LENGTH) invalid()
   return x
+}
+
+/** A project or subject id, as `emptyProject` stores it. */
+export function parseProjectId(x: unknown): string {
+  if (typeof x !== 'string' || !/^[A-Za-z0-9_-]{1,80}$/.test(x)) invalid()
+  return x
+}
+
+/** A display name before `folderSegment` trims it. The store decides if it is safe. */
+export function parseProjectName(x: unknown): string {
+  if (typeof x !== 'string' || x.length === 0 || x.length > 200) invalid()
+  return x
+}
+
+/** A folder the user picked. Blocked roots are refused by the store, not here. */
+export function parseProjectRoot(x: unknown): string {
+  if (typeof x !== 'string' || x.length === 0 || x.length > MAX_PATH_LENGTH) invalid()
+  return x
+}
+
+export function parseBranchKind(x: unknown): BranchKind {
+  if (typeof x !== 'string' || !(BRANCH_KINDS as readonly string[]).includes(x)) invalid()
+  return x as BranchKind
 }
 
 /** A folder or tracked file of `tree`, by id. */
@@ -157,6 +185,7 @@ export interface HandlerDeps {
   binUsage: Pick<BinUsageCache, 'usedBytes' | 'refresh'>
   cleanup: Omit<CleanupDeps, 'log'>
   binDir: RestoreDeps['binDir']
+  projects: Pick<ProjectsStore, 'list' | 'create' | 'addSubject' | 'removeSubject'>
   driveUsage(roots: string[]): Promise<DriveUsage[]>
   cleanProgress(done: number, total: number): void
   pickFolder(): Promise<string | null>
@@ -196,6 +225,36 @@ export function createHandlers(deps: HandlerDeps): StashHandlers {
   const treeOrInvalid = (): ScanTree => latestTree() ?? invalid()
   const refreshBin = (): void => void binUsage.refresh()
 
+  /** Puts a batch back through Restore. The renderer passes a batch id, never a path. */
+  async function putBack(id: string): Promise<RestoreRecord> {
+    if (working !== null) throw new Error('busy')
+    working = 'restore'
+    try {
+      const batch = await log.getBatch(id)
+      if (batch === null) throw new Error('unknown batch')
+      // Items an earlier restore put back are left out; otherwise they would now be recorded as
+      // no longer in the Recycle Bin.
+      const restored = alreadyRestored(await log.history(), id)
+      const remaining: CleanupBatch = {
+        ...batch,
+        items: batch.items.filter(
+          (i) => i.status !== 'recycled' || !restored.has(pathKey(i.originalPath))
+        )
+      }
+      if (!remaining.items.some((i) => i.status === 'recycled')) {
+        // Nothing is left to put back: say so without logging an empty restore.
+        return { type: 'restore', batchId: id, at: new Date(deps.now()).toISOString(), items: [] }
+      }
+      try {
+        return await restoreBatch(remaining, { binDir: deps.binDir, log, now: deps.now })
+      } finally {
+        refreshBin()
+      }
+    } finally {
+      working = null
+    }
+  }
+
   async function saveSettings(input: unknown): Promise<Settings> {
     const before = driveRoots(settings.get().scanTargets).join('|')
     // Stored before the session sees it: the session reads the live settings when a scan ends.
@@ -217,7 +276,8 @@ export function createHandlers(deps: HandlerDeps): StashHandlers {
 
     async startScan(root: unknown): Promise<{ scanId: string }> {
       const parsed = parseScanRoot(root)
-      if (working === 'clean') throw new Error('busy')
+      // A scan must not replace the session while items are being put back.
+      if (working !== null) throw new Error('busy')
       return { scanId: session.start(parsed) }
     },
 
@@ -273,33 +333,48 @@ export function createHandlers(deps: HandlerDeps): StashHandlers {
     },
 
     async restoreBatch(batchId: unknown): Promise<RestoreRecord> {
-      const id = parseBatchId(batchId)
-      if (working !== null) throw new Error('busy')
-      working = 'restore'
+      return putBack(parseBatchId(batchId))
+    },
+
+    async undoLatest(): Promise<UndoOutcome> {
+      requireFeature('undo')
+      if (working !== null) return { status: 'busy' }
+      const target = latestUndoTarget(await log.history())
+      // history() yielded. A clean or another restore may have started.
+      if (working !== null) return { status: 'busy' }
+      if (target === null) return { status: 'nothing' }
       try {
-        const batch = await log.getBatch(id)
-        if (batch === null) throw new Error('unknown batch')
-        // Items an earlier restore put back are left out; otherwise they would now be recorded as
-        // no longer in the Recycle Bin.
-        const restored = alreadyRestored(await log.history(), id)
-        const remaining: CleanupBatch = {
-          ...batch,
-          items: batch.items.filter(
-            (i) => i.status !== 'recycled' || !restored.has(pathKey(i.originalPath))
-          )
+        const record = await putBack(target.batchId)
+        return {
+          status: 'done',
+          batchId: target.batchId,
+          restorableCount: target.restorableCount,
+          record
         }
-        if (!remaining.items.some((i) => i.status === 'recycled')) {
-          // Nothing is left to put back: say so without logging an empty restore.
-          return { type: 'restore', batchId: id, at: new Date(deps.now()).toISOString(), items: [] }
-        }
-        try {
-          return await restoreBatch(remaining, { binDir: deps.binDir, log, now: deps.now })
-        } finally {
-          refreshBin()
-        }
-      } finally {
-        working = null
+      } catch (e) {
+        if (e instanceof Error && e.message === 'busy') return { status: 'busy' }
+        throw e
       }
+    },
+
+    async getProjects(): Promise<ProjectTree[]> {
+      return deps.projects.list()
+    },
+
+    async createProject(name: unknown, rootPath: unknown): Promise<ProjectTree> {
+      return deps.projects.create(parseProjectName(name), parseProjectRoot(rootPath))
+    },
+
+    async addSubject(projectId: unknown, kind: unknown, name: unknown): Promise<ProjectTree> {
+      return deps.projects.addSubject(
+        parseProjectId(projectId),
+        parseBranchKind(kind),
+        parseProjectName(name)
+      )
+    },
+
+    async removeSubject(projectId: unknown, subjectId: unknown): Promise<ProjectTree> {
+      return deps.projects.removeSubject(parseProjectId(projectId), parseProjectId(subjectId))
     },
 
     async getSettings(): Promise<Settings> {
@@ -370,6 +445,7 @@ export function registerIpc(deps: IpcDeps): void {
     log: deps.log,
     settings: deps.settings,
     binUsage: deps.binUsage,
+    projects: new ProjectsStore(deps.settingsDir, deps.env),
     cleanup: {
       recycler: deps.recycler,
       binInfo: getRecycleBinInfo,

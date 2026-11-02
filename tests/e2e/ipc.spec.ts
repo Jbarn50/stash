@@ -48,6 +48,11 @@ test('window.stash is the whole API and answers before any scan', async () => {
       'pickFolder',
       'rescanAsAdmin',
       'restoreBatch',
+      'undoLatest',
+      'getProjects',
+      'createProject',
+      'addSubject',
+      'removeSubject',
       'saveSettings',
       'showItem',
       'startScan'

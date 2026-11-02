@@ -916,7 +916,9 @@ test('a log that cannot be written rejects the run, and what was moved stays in 
     }
   })
 
-  await expect(runCleanup([item], [item], false, h.deps)).rejects.toThrow('disk full')
+  await expect(runCleanup([item], [item], false, h.deps)).rejects.toThrow(
+    /Undo cannot put them back[\s\S]*disk full/
+  )
 
   expect(existsSync(file)).toBe(false)
   expect(readdirSync(binDir)).toHaveLength(1)
