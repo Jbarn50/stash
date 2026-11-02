@@ -1,6 +1,7 @@
 import { win32 } from 'node:path'
 import type { Finding } from '../../shared/types'
 import { fileFinding, type DetectorContext } from './context'
+import { insideLeftoverShape } from './devLeftovers'
 import { insideGitFolder, inPersonalScope } from './scope'
 
 const DAY = 86_400_000
@@ -48,6 +49,7 @@ export function detectInstallersStale(ctx: DetectorContext): Finding[] {
       !file.extraHardLink &&
       !claims.fileClaimed(file.id) &&
       !insideGitFolder(tree, file.folderId) &&
+      !insideLeftoverShape(tree, file.folderId) &&
       inPersonalScope(tree.filePath(file.id), ctx.env, settings)
     ) {
       findings.push(fileFinding(ctx, 'stale-large', file.id))

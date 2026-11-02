@@ -48,6 +48,28 @@ const FOLDER_RULES: { ruleId: RuleId; names: string[]; project: ProjectTest }[] 
   { ruleId: 'godot-cache', names: ['.godot'], project: hasMarker('project.godot') }
 ]
 
+/** The leftover rule whose shape the folder has — its name plus what sits next to it — idle or not. */
+function leftoverRule(tree: ScanTree, folderId: number): RuleId | undefined {
+  const folder = tree.folders[folderId]
+  if (folder.parentId === -1) return undefined
+  if (folder.markers.includes('pyvenv.cfg')) return 'dev-python-venv'
+  const name = folder.name.toLowerCase()
+  return FOLDER_RULES.find((r) => r.names.includes(name) && r.project(tree, folder.parentId))
+    ?.ruleId
+}
+
+/**
+ * True when the folder is, or lies inside, a project's dependency, build, cache or venv folder, idle
+ * or not (spec §6.2). Duplicates and stale files are never looked for there: removing one file from
+ * an active project's node_modules breaks the project.
+ */
+export function insideLeftoverShape(tree: ScanTree, folderId: number): boolean {
+  for (let f = folderId; f !== -1; f = tree.folders[f].parentId) {
+    if (leftoverRule(tree, f) !== undefined) return true
+  }
+  return false
+}
+
 /**
  * Apps and tools install themselves with package.json files and node_modules too (VS Code extensions
  * under .vscode, Electron apps under AppData\Local\Programs). Those are not projects: removing their
@@ -105,18 +127,11 @@ export function detectDevLeftovers(ctx: DetectorContext): Finding[] {
     const folder = tree.folders[id]
     if (claims.folderClaimed(id) || (folder.sizeOnDisk === 0 && !folder.unreadable)) continue
     const projectId = folder.parentId
-    const name = folder.name.toLowerCase()
-
-    if (folder.markers.includes('pyvenv.cfg')) {
+    const ruleId = leftoverRule(tree, id)
+    if (ruleId !== undefined) {
       if (idle(projectId, id) && !inToolArea(ctx, projectId)) {
-        findings.push(folderFinding(ctx, 'dev-python-venv', id))
+        findings.push(folderFinding(ctx, ruleId, id))
       }
-      continue
-    }
-    const rule = FOLDER_RULES.find((r) => r.names.includes(name) && r.project(tree, projectId))
-    if (rule) {
-      if (idle(projectId, id) && !inToolArea(ctx, projectId))
-        findings.push(folderFinding(ctx, rule.ruleId, id))
       continue
     }
     if (isOldImageSequence(ctx, id) && !inToolArea(ctx, id)) {

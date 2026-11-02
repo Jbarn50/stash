@@ -1,13 +1,16 @@
 import { win32 } from 'node:path'
 import { afterAll, beforeAll, describe, expect, test } from 'vitest'
-import { createDetectorContext } from '../../src/core/detectors/context'
+import { createDetectorContext, type DetectorContext } from '../../src/core/detectors/context'
+import { buildDuplicateFindings, duplicateCandidates } from '../../src/core/detectors/duplicates'
 import { runStaticDetectors } from '../../src/core/detectors/index'
+import { hashGroups } from '../../src/core/hash'
 import { scanTree } from '../../src/core/scan/scanTree'
 import type { Finding } from '../../src/shared/types'
 import { buildFixture, type Fixture } from '../fixtures/buildFixture'
 
 describe.runIf(process.platform === 'win32')('detectors on the fixture', () => {
   let fx: Fixture
+  let ctx: DetectorContext
   let findings: Finding[]
   let rules: Record<string, string>
 
@@ -17,17 +20,16 @@ describe.runIf(process.platform === 'win32')('detectors on the fixture', () => {
       root: fx.root,
       trackFileMinBytes: fx.settings.thresholds.trackFileMinBytes
     })
-    findings = runStaticDetectors(
-      createDetectorContext({
-        scanId: 'fx',
-        tree,
-        env: fx.env,
-        settings: fx.settings,
-        now: Date.now(),
-        // The fixture's six small frames stand in for a real sequence.
-        limits: { imageSeqMinFiles: 5, imageSeqMinBytes: 307200 }
-      })
-    )
+    ctx = createDetectorContext({
+      scanId: 'fx',
+      tree,
+      env: fx.env,
+      settings: fx.settings,
+      now: Date.now(),
+      // The fixture's six small frames stand in for a real sequence.
+      limits: { imageSeqMinFiles: 5, imageSeqMinBytes: 307200 }
+    })
+    findings = runStaticDetectors(ctx)
     rules = Object.fromEntries(findings.map((f) => [f.path, f.ruleId]))
   })
   afterAll(async () => {
@@ -61,5 +63,15 @@ describe.runIf(process.platform === 'win32')('detectors on the fixture', () => {
 
   test('no path is reported twice', () => {
     expect(new Set(findings.map((f) => f.path)).size).toBe(findings.length)
+  })
+
+  test('duplicates on the fixture: the photo pair only, keeping the older photo', async () => {
+    const groups = await hashGroups(duplicateCandidates(ctx))
+    const dupes = buildDuplicateFindings(groups, { scanId: 'fx', tree: ctx.tree, env: fx.env })
+    expect(dupes.map((f) => f.path).sort()).toEqual([fx.p.photo, fx.p.photoCopy].sort())
+    expect(dupes.find((f) => f.suggestedKeep)?.path).toBe(fx.p.photo)
+    for (const p of [fx.p.gitCopy, fx.p.nearA, fx.p.nearB, fx.p.hard1, fx.p.hard2]) {
+      expect(dupes.some((f) => f.path === p)).toBe(false)
+    }
   })
 })
