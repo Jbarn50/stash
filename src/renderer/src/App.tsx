@@ -2,7 +2,9 @@ import { useState } from 'react'
 import { useSession } from './lib/useSession'
 import Cleanup from './screens/Cleanup'
 import Explore from './screens/Explore'
+import History from './screens/History'
 import Overview from './screens/Overview'
+import Settings from './screens/Settings'
 
 const TABS = ['Overview', 'Explore', 'Cleanup', 'History', 'Settings'] as const
 type Tab = (typeof TABS)[number]
@@ -32,11 +34,8 @@ function App(): React.JSX.Element {
           <Explore key={session.summary?.scanId ?? 'none'} summary={session.summary} />
         )}
         {tab === 'Cleanup' && <Cleanup key={session.summary?.scanId ?? 'none'} session={session} />}
-        {(tab === 'History' || tab === 'Settings') && (
-          <div className="screen">
-            <p className="muted">{tab} is not built yet.</p>
-          </div>
-        )}
+        {tab === 'History' && <History />}
+        {tab === 'Settings' && <Settings />}
       </main>
     </div>
   )

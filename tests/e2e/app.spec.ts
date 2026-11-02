@@ -56,3 +56,18 @@ test('Cleanup lists the fixture .blend1 under Dev & creative leftovers, unselect
   await expect(box).toBeVisible()
   await expect(box).not.toBeChecked()
 })
+
+test('History starts empty; a changed threshold survives a Save and reload', async () => {
+  await page.getByRole('tab', { name: 'History' }).click()
+  await expect(page.getByText('No cleanups yet')).toBeVisible()
+
+  await page.getByRole('tab', { name: 'Settings' }).click()
+  const months = page.getByRole('spinbutton', { name: 'Stale after' })
+  await months.fill('7')
+  await page.getByRole('button', { name: 'Save' }).click()
+  await expect(page.getByText('Saved.')).toBeVisible()
+
+  await page.reload()
+  await page.getByRole('tab', { name: 'Settings' }).click()
+  await expect(page.getByRole('spinbutton', { name: 'Stale after' })).toHaveValue('7')
+})
