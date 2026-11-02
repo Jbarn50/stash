@@ -150,15 +150,21 @@ export class ScanSession {
     if (this.busy) this.running?.abort()
   }
 
+  /**
+   * The findings behind these ids, in the order given, for cleanup. Refused while a scan runs, for
+   * ids of any scan but the latest, and for every id of a scan that did not finish: a cancelled or
+   * failed scan leaves a tree that was cut short, so what it found can be shown but not cleaned.
+   */
   resolveFindings(
     ids: string[]
   ):
     | { ok: true; findings: Finding[] }
-    | { ok: false; reason: 'stale-scan' | 'busy' | 'unknown-finding' } {
+    | { ok: false; reason: 'stale-scan' | 'busy' | 'incomplete-scan' | 'unknown-finding' } {
     if (this.busy) return { ok: false, reason: 'busy' }
     const latest = this._latest
     const stale = ids.some((id) => scanIdOf(id) !== latest?.scanId)
     if (stale) return { ok: false, reason: 'stale-scan' }
+    if (latest?.summary.incomplete) return { ok: false, reason: 'incomplete-scan' }
     const byId = new Map((latest?.findings ?? []).map((f) => [f.id, f]))
     const findings: Finding[] = []
     for (const id of ids) {

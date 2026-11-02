@@ -4,7 +4,7 @@ import type { ScanProgressPayload } from '../../src/core/scan/scanTree'
 import { MiB, validateSettings } from '../../src/core/settings'
 import type { ScanTree } from '../../src/core/tree'
 import { ScanSession, type HashRunner, type ScanRunner } from '../../src/main/session'
-import type { Finding, SessionEvent, SessionState } from '../../src/shared/types'
+import type { CleanOutcome, Finding, SessionEvent, SessionState } from '../../src/shared/types'
 import type { ScanDone, ScanJob } from '../../src/workers/protocol'
 import { SAMPLE_ENV } from '../helpers/env'
 import { treeFrom } from '../helpers/treeFrom'
@@ -566,6 +566,119 @@ describe('resolveFindings', () => {
   })
 })
 
+describe('the findings of an incomplete scan', () => {
+  // A cancelled or failed scan leaves a tree that was cut short, and the idle checks of the folder
+  // rules (is anything in this project newer?) rest on it. Its findings can be shown, not cleaned.
+  type Ended = () => Promise<{ h: Harness; scanId: string }>
+  const cancelledWalk: Ended = async () => {
+    const entered = deferred()
+    const h = harness({
+      scan: async (job, _onProgress, signal) => {
+        entered.resolve()
+        await aborted(signal)
+        return scanDone(job, { incomplete: true })
+      }
+    })
+    const scanId = h.session.start(ROOT)
+    await entered.promise
+    h.session.cancel()
+    await h.settled()
+    return { h, scanId }
+  }
+  const failedWalk: Ended = async () => {
+    const h = harness({ scan: async (job) => scanDone(job, { incomplete: true, error: 'boom' }) })
+    return { h, scanId: await h.runToDone() }
+  }
+  const cancelledHashing: Ended = async () => {
+    const entered = deferred()
+    const h = harness({
+      hash: async (_groups, _onProgress, signal) => {
+        entered.resolve()
+        await aborted(signal)
+        return []
+      }
+    })
+    const scanId = h.session.start(ROOT)
+    await entered.promise
+    h.session.cancel()
+    await h.settled()
+    return { h, scanId }
+  }
+  const failedHashing: Ended = async () => {
+    const h = harness({
+      hash: async () => {
+        throw new Error('The hash worker stopped unexpectedly')
+      }
+    })
+    return { h, scanId: await h.runToDone() }
+  }
+
+  test.each<[string, Ended]>([
+    ['a cancel during the walk', cancelledWalk],
+    ['a walk that fails', failedWalk],
+    ['a cancel during hashing', cancelledHashing],
+    ['a hash run that fails', failedHashing]
+  ])('after %s the findings are shown but cannot be resolved', async (_name, ended) => {
+    const { h, scanId } = await ended()
+    const id = `${scanId}:temp-user:0`
+
+    expect(h.session.latest!.summary.incomplete).toBe(true)
+    expect(idsOf(h.session)).toContain(id)
+    expect(h.session.resolveFindings([id])).toEqual({ ok: false, reason: 'incomplete-scan' })
+    // The scan is judged before the ids are looked up.
+    expect(h.session.resolveFindings([`${scanId}:nope:9`])).toEqual({
+      ok: false,
+      reason: 'incomplete-scan'
+    })
+  })
+
+  test('removing findings or applying exclusions does not make an incomplete scan cleanable', async () => {
+    const { h, scanId } = await cancelledWalk()
+    h.session.removeFindings([`${scanId}:sys-windows-update:1`])
+    h.session.applyExclusions(validateSettings({ exclusions: ['C:\\Users\\jorda\\Music'] }))
+    expect(idsOf(h.session)).toEqual([`${scanId}:temp-user:0`])
+    expect(h.session.resolveFindings([`${scanId}:temp-user:0`])).toEqual({
+      ok: false,
+      reason: 'incomplete-scan'
+    })
+  })
+
+  test('an id from an older scan is still stale when the latest scan is incomplete', async () => {
+    const h = harness()
+    const older = await h.runToDone()
+    h.scan.mockImplementationOnce(async (job) => scanDone(job, { incomplete: true }))
+    await h.runToDone()
+    expect(h.session.resolveFindings([`${older}:temp-user:0`])).toEqual({
+      ok: false,
+      reason: 'stale-scan'
+    })
+  })
+
+  test('busy outranks incomplete-scan', async () => {
+    const h = harness({ scan: async (job) => scanDone(job, { incomplete: true }) })
+    const scanId = await h.runToDone()
+    const gate = deferred()
+    h.scan.mockImplementationOnce(async (job) => {
+      await gate.promise
+      return scanDone(job)
+    })
+    h.session.start(ROOT)
+    expect(h.session.resolveFindings([`${scanId}:temp-user:0`])).toEqual({
+      ok: false,
+      reason: 'busy'
+    })
+    gate.resolve()
+    await h.settled()
+  })
+
+  test('every reason resolveFindings can give is one a cleanup can be rejected for', () => {
+    // Compile-time: Task 14 turns a refused resolveFindings straight into a rejected CleanOutcome.
+    type Reason = Extract<ReturnType<ScanSession['resolveFindings']>, { ok: false }>['reason']
+    const rejected = (reason: Reason): CleanOutcome => ({ status: 'rejected', reason })
+    expect(rejected('incomplete-scan')).toEqual({ status: 'rejected', reason: 'incomplete-scan' })
+  })
+})
+
 describe('changing the results after a scan', () => {
   test('removeFindings drops the findings and recomputes the summary, keeping what the scan measured', async () => {
     // An incomplete scan, so the test can see the summary keep its incomplete flag.
@@ -589,8 +702,6 @@ describe('changing the results after a scan', () => {
       windowsCanClean: 3 * MiB,
       durationMs: 1234
     })
-    // What was removed can no longer be cleaned.
-    expect(h.session.resolveFindings([removed])).toEqual({ ok: false, reason: 'unknown-finding' })
   })
 
   test('applyExclusions drops findings inside an exclusion, ignoring case, but not a folder that only shares the start of its name', async () => {

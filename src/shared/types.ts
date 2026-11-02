@@ -143,7 +143,10 @@ export type CleanOutcome =
       binUsedBytes: Bytes
       binMaxBytes: Bytes
     }
-  | { status: 'rejected'; reason: 'stale-scan' | 'busy' | 'unknown-finding' }
+  | {
+      status: 'rejected'
+      reason: 'stale-scan' | 'busy' | 'incomplete-scan' | 'unknown-finding'
+    }
 
 export interface HistoryEntry {
   batch: CleanupBatch
