@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { useSession } from './lib/useSession'
+import Explore from './screens/Explore'
 import Overview from './screens/Overview'
 
 const TABS = ['Overview', 'Explore', 'Cleanup', 'History', 'Settings'] as const
@@ -26,7 +27,10 @@ function App(): React.JSX.Element {
           ))}
         </div>
         {tab === 'Overview' && <Overview session={session} />}
-        {tab !== 'Overview' && (
+        {tab === 'Explore' && (
+          <Explore key={session.summary?.scanId ?? 'none'} summary={session.summary} />
+        )}
+        {tab !== 'Overview' && tab !== 'Explore' && (
           <div className="screen">
             <p className="muted">{tab} is not built yet.</p>
           </div>
