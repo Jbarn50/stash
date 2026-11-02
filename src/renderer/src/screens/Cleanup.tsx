@@ -30,7 +30,13 @@ const OVERFLOW =
 
 type Dialog = { kind: 'confirm'; ids: string[] } | { kind: 'overflow'; ids: string[] } | null
 
-export default function Cleanup({ session }: { session: SessionView }): React.JSX.Element {
+export default function Cleanup({
+  session,
+  onCleaned
+}: {
+  session: SessionView
+  onCleaned?: () => void
+}): React.JSX.Element {
   const { summary } = session
   const busy = isBusy(session.state)
   const [findings, setFindings] = useState<Finding[]>([])
@@ -88,6 +94,7 @@ export default function Cleanup({ session }: { session: SessionView }): React.JS
         else {
           setResult(out.batch)
           load()
+          onCleaned?.()
         }
       })
       .catch((e) => setProblem(errorText(e)))
@@ -120,6 +127,11 @@ export default function Cleanup({ session }: { session: SessionView }): React.JS
                 .catch((e) => setProblem(errorText(e)))
             }
             onDismiss={() => setResult(null)}
+            onUndo={() => {
+              const outcome = api().undoLatest()
+              outcome.then(() => onCleaned?.()).catch(() => undefined)
+              return outcome
+            }}
           />
         )}
 

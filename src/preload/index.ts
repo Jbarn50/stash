@@ -30,6 +30,13 @@ const stash: StashApi = {
   onCleanProgress: (cb) => subscribe<[number, number]>(CHANNELS.onCleanProgress, cb),
   getHistory: () => ipcRenderer.invoke(CHANNELS.getHistory),
   restoreBatch: (batchId) => ipcRenderer.invoke(CHANNELS.restoreBatch, batchId),
+  undoLatest: () => ipcRenderer.invoke(CHANNELS.undoLatest),
+  getProjects: () => ipcRenderer.invoke(CHANNELS.getProjects),
+  createProject: (name, rootPath) => ipcRenderer.invoke(CHANNELS.createProject, name, rootPath),
+  addSubject: (projectId, kind, name) =>
+    ipcRenderer.invoke(CHANNELS.addSubject, projectId, kind, name),
+  removeSubject: (projectId, subjectId) =>
+    ipcRenderer.invoke(CHANNELS.removeSubject, projectId, subjectId),
   getSettings: () => ipcRenderer.invoke(CHANNELS.getSettings),
   saveSettings: (s) => ipcRenderer.invoke(CHANNELS.saveSettings, s),
   pickFolder: () => ipcRenderer.invoke(CHANNELS.pickFolder),

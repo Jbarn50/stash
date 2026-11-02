@@ -153,6 +153,17 @@ export interface HistoryEntry {
   restores: RestoreRecord[]
 }
 
+/** What Undo did. It never reports that the Recycle Bin was emptied. */
+export type UndoOutcome =
+  | { status: 'nothing' }
+  | { status: 'busy' }
+  | {
+      status: 'done'
+      batchId: string
+      restorableCount: number
+      record: RestoreRecord
+    }
+
 export interface DriveUsage {
   root: string
   totalBytes: Bytes

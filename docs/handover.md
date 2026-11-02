@@ -8,6 +8,14 @@ Tasks 1–18 are on `feat/space-cleanup`. Task 19's e2e test and NSIS settings a
 
 The status table and the numbered next steps below are the handover as it was written, before Tasks 14–18 and the e2e round trip landed. They are kept so the briefs stay in context. Follow the review for what is left.
 
+## Beyond Space & Cleanup
+
+Not part of Tasks 1–19. Undo and the project-tree shell are specified in `docs/superpowers/specs/2026-11-02-organize-and-undo-design.md`.
+
+- Undo of the last cleanup is implemented. It calls the existing restore. It does not empty the Recycle Bin.
+- The Projects screen remembers a tree (character, lore, scenery, location, plus an inbox). It does not create folders or move files.
+- Workflow import and visual labeling are hooks that return nothing. `FEATURES.organize` in `src/core/features.ts` stays off until a later phase turns it on in the same change as the file moves.
+
 ## What Stash is
 
 Stash is a Windows desktop app (Electron 45 + TypeScript + React, built with electron-vite) for managing a user's files. Its first module, **Space & Cleanup v1**, is what is being built here:

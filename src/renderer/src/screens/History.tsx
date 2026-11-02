@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import type { HistoryEntry, RestoreRecord } from '../../../shared/types'
+import { latestUndoTarget } from '../../../shared/undoTarget'
 import { api, errorText, maybeApi } from '../lib/api'
 import { formatBytes, formatDate } from '../lib/format'
 import { batchStatus, itemStatus, restorableCount } from '../lib/historyStatus'
@@ -15,7 +16,7 @@ function restoreNote(r: RestoreRecord): string {
   return parts.join(', ') + '.'
 }
 
-export default function History(): React.JSX.Element {
+export default function History({ onRestored }: { onRestored?: () => void }): React.JSX.Element {
   const [entries, setEntries] = useState<HistoryEntry[] | null>(null)
   const [open, setOpen] = useState<Set<string>>(new Set())
   const [busyBatch, setBusyBatch] = useState<string | null>(null)
@@ -46,10 +47,13 @@ export default function History(): React.JSX.Element {
       .then(async (record) => {
         setNotes((n) => ({ ...n, [batchId]: restoreNote(record) }))
         setEntries(sortNewest(await api().getHistory()))
+        onRestored?.()
       })
       .catch((e) => setError(errorText(e)))
       .finally(() => setBusyBatch(null))
   }
+
+  const undoId = latestUndoTarget(entries ?? [])?.batchId
 
   return (
     <div className="screen">
@@ -94,7 +98,11 @@ export default function History(): React.JSX.Element {
               <span className="badge">{batchStatus(e)}</span>
               {restorableCount(e) > 0 && (
                 <button disabled={busyBatch !== null} onClick={() => restore(batch.batchId)}>
-                  {busyBatch === batch.batchId ? 'Restoring…' : 'Restore'}
+                  {busyBatch === batch.batchId
+                    ? 'Restoring…'
+                    : batch.batchId === undoId
+                      ? 'Undo'
+                      : 'Restore'}
                 </button>
               )}
             </div>

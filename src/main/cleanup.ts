@@ -338,6 +338,14 @@ export async function runCleanup(
     finishedAt: iso(deps.now()),
     items: records
   }
-  await deps.log.append(batch)
+  try {
+    await deps.log.append(batch)
+  } catch (e) {
+    // The items are already in the bin. Undo reads History, so without this line it cannot see them.
+    throw new Error(
+      `These items are in the Recycle Bin, but Stash could not write History, so Undo cannot put them back. Restore them from Explorer. ${errorMessage(e)}`,
+      { cause: e }
+    )
+  }
   return { status: 'done', batch }
 }

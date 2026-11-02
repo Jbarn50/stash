@@ -22,7 +22,10 @@ export function batchStatus(e: HistoryEntry): BatchStatus {
   return back > 0 ? 'partly restored' : 'recycled'
 }
 
-/** Items Restore can still try: recycled, not already put back, not gone from the bin. A failed one may be retried. */
+/**
+ * Items Restore can still try: recycled, not already put back, not gone from the bin. A failed one may be retried.
+ * `latestUndoTarget` in `src/shared/undoTarget.ts` must keep this same count.
+ */
 export function restorableCount(e: HistoryEntry): number {
   const latest = latestRestores(e)
   return recycledItems(e).filter((i) => {

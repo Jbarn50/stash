@@ -1,19 +1,43 @@
-import type { CleanupBatch, CleanupItemRecord } from '../../../shared/types'
+import { useState } from 'react'
+import type { CleanupBatch, CleanupItemRecord, UndoOutcome } from '../../../shared/types'
+import ConfirmDialog from './ConfirmDialog'
 import { formatBytes } from '../lib/format'
+import { undoConfirmText, undoResultText } from '../lib/undoText'
 
 /** What a cleanup did: the recycled count and size, then the skipped items grouped by their reason. */
 export default function ResultSummary({
   batch,
   onOpenRecycleBin,
-  onDismiss
+  onDismiss,
+  onUndo
 }: {
   batch: CleanupBatch
   onOpenRecycleBin: () => void
   onDismiss: () => void
+  onUndo: () => Promise<UndoOutcome>
 }): React.JSX.Element {
   const recycled = batch.items.filter((i) => i.status === 'recycled')
   const skipped = batch.items.filter((i) => i.status === 'skipped')
   const bytes = recycled.reduce((s, i) => s + i.sizeOnDisk, 0)
+  const [confirming, setConfirming] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [note, setNote] = useState<string | null>(null)
+  const [undoError, setUndoError] = useState<string | null>(null)
+
+  const undo = (): void => {
+    setConfirming(false)
+    setBusy(true)
+    setUndoError(null)
+    onUndo()
+      .then((outcome) => {
+        if (outcome.status === 'busy')
+          setUndoError('Stash is busy right now. Try again in a moment.')
+        else if (outcome.status === 'nothing') setNote('Nothing left to put back.')
+        else setNote(undoResultText(outcome.record))
+      })
+      .catch((e: unknown) => setUndoError(e instanceof Error ? e.message : String(e)))
+      .finally(() => setBusy(false))
+  }
   // Reasons are shown exactly as the main process wrote them; new reasons need no change here.
   const byReason = new Map<string, CleanupItemRecord[]>()
   for (const item of skipped) {
@@ -48,13 +72,28 @@ export default function ResultSummary({
           </div>
         )
       })}
+      {undoError && <div className="error">{undoError}</div>}
+      {note && <p>{note}</p>}
       <div className="row" style={{ marginTop: 8 }}>
         <span>Space is only freed when you empty the Recycle Bin.</span>
+        {recycled.length > 0 && note === null && (
+          <button className="primary" disabled={busy} onClick={() => setConfirming(true)}>
+            {busy ? 'Putting back…' : 'Undo'}
+          </button>
+        )}
         <button onClick={onOpenRecycleBin}>Open Recycle Bin</button>
         <button className="link" onClick={onDismiss}>
           Done
         </button>
       </div>
+      {confirming && (
+        <ConfirmDialog
+          message={undoConfirmText(recycled.length)}
+          confirmLabel="Undo"
+          onCancel={() => setConfirming(false)}
+          onConfirm={undo}
+        />
+      )}
     </div>
   )
 }

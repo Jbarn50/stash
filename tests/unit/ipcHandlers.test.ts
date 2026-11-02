@@ -6,6 +6,7 @@ import type { RecycleBinInfo } from '../../src/main/recycleBin'
 import type { LatestScan } from '../../src/main/session'
 import type {
   CleanupBatch,
+  CleanupItemRecord,
   Finding,
   HistoryEntry,
   RestoreRecord,
@@ -160,6 +161,12 @@ function harness(over: Partial<HandlerDeps> = {}): Harness {
       now: () => NOW
     },
     binDir: vi.fn(async () => 'X:\\$Recycle.Bin\\S-1-5-21-1'),
+    projects: {
+      list: vi.fn(async () => []),
+      create: vi.fn(),
+      addSubject: vi.fn(),
+      removeSubject: vi.fn()
+    },
     driveUsage: vi.fn(async (roots: string[]) =>
       roots.map((root) => ({ root, totalBytes: 10, freeBytes: 5 }))
     ),
@@ -377,6 +384,116 @@ describe('restoreBatch', () => {
       items: []
     })
     expect(h.deps.log.append).not.toHaveBeenCalled()
+  })
+
+  test('a scan is refused while a restore runs', async () => {
+    const h = harness()
+    h.history.push({ batch: batch(), restores: [] })
+    binHolds(['$RA.tmp', '$RB.tmp', '$RC.tmp'])
+    const handlers = createHandlers(h.deps)
+    // working is set before the first await, so the next call already sees the restore.
+    const pending = handlers.restoreBatch('b-1')
+    await expect(handlers.startScan('X:\\')).rejects.toThrow('busy')
+    expect(h.deps.session.start).not.toHaveBeenCalled()
+    await pending
+  })
+})
+
+describe('undoLatest', () => {
+  const BIN = 'X:\\$Recycle.Bin\\S-1-5-21-1'
+
+  function recycled(id: string, path: string, rName: string): CleanupItemRecord {
+    return {
+      findingId: id,
+      ruleId: 'temp',
+      kind: 'file',
+      originalPath: path,
+      sizeOnDisk: MiB,
+      mtime: new Date(1).toISOString(),
+      status: 'recycled',
+      recycledAs: rName
+    }
+  }
+
+  function batch(id: string, startedAt: string, items: CleanupItemRecord[]): CleanupBatch {
+    return { type: 'cleanup', batchId: id, startedAt, finishedAt: startedAt, items }
+  }
+
+  function hold(names: string[]): void {
+    vi.mocked(fs.lstat).mockImplementation(async (p) => {
+      const path = String(p)
+      if (names.some((n) => path === `${BIN}\\${n}`)) return { isFile: () => true } as never
+      throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+    })
+    vi.mocked(fs.mkdir).mockResolvedValue(undefined)
+    vi.mocked(fs.link).mockResolvedValue(undefined)
+    vi.mocked(fs.unlink).mockResolvedValue(undefined)
+  }
+
+  test('puts back only the newest cleanup that is still in the bin', async () => {
+    const h = harness()
+    const older = batch('old', '2026-11-01T00:00:00.000Z', [
+      recycled('scan-1:temp:old', 'X:\\Temp\\old.tmp', '$ROLD.tmp')
+    ])
+    const newer = batch('new', '2026-11-02T00:00:00.000Z', [
+      recycled('scan-1:temp:new', 'X:\\Temp\\new.tmp', '$RNEW.tmp')
+    ])
+    h.history.push({ batch: older, restores: [] }, { batch: newer, restores: [] })
+    hold(['$RNEW.tmp'])
+    vi.mocked(fs.unlink).mockClear()
+
+    const outcome = await createHandlers(h.deps).undoLatest()
+    expect(outcome.status).toBe('done')
+    if (outcome.status !== 'done') return
+    expect(outcome.batchId).toBe('new')
+    expect(outcome.restorableCount).toBe(1)
+    expect(outcome.record.items.map((item) => item.originalPath)).toEqual(['X:\\Temp\\new.tmp'])
+    expect(h.deps.cleanup.recycler.trash).not.toHaveBeenCalled()
+    for (const call of vi.mocked(fs.unlink).mock.calls) {
+      expect(String(call[0]).startsWith(`${BIN}\\`)).toBe(true)
+    }
+  })
+
+  test('does nothing when every cleanup is already back, and does not write a restore', async () => {
+    const h = harness()
+    const only = batch('only', '2026-11-02T00:00:00.000Z', [
+      recycled('scan-1:temp:a', 'X:\\Temp\\a.tmp', '$RA.tmp')
+    ])
+    const restored: RestoreRecord = {
+      type: 'restore',
+      batchId: 'only',
+      at: '2026-11-02T01:00:00.000Z',
+      items: [{ originalPath: 'X:\\Temp\\a.tmp', status: 'restored' }]
+    }
+    h.history.push({ batch: only, restores: [restored] })
+    vi.mocked(fs.unlink).mockClear()
+    const outcome = await createHandlers(h.deps).undoLatest()
+    expect(outcome).toEqual({ status: 'nothing' })
+    expect(h.deps.log.append).not.toHaveBeenCalled()
+    expect(fs.unlink).not.toHaveBeenCalled()
+  })
+
+  test('reports busy while a clean runs and does not start a restore', async () => {
+    filesUnchanged()
+    const h = harness()
+    h.history.push({
+      batch: batch('new', '2026-11-02T00:00:00.000Z', [
+        recycled('scan-1:temp:0', 'X:\\Temp\\f0.tmp', '$RF0.tmp')
+      ]),
+      restores: []
+    })
+    let release!: () => void
+    vi.mocked(h.deps.cleanup.recycler.trash).mockImplementationOnce(
+      () => new Promise<void>((resolve) => (release = resolve))
+    )
+    const handlers = createHandlers(h.deps)
+    const cleaning = handlers.clean(['scan-1:temp:0'], false)
+    await vi.waitFor(() => expect(h.deps.cleanup.recycler.trash).toHaveBeenCalled())
+    vi.mocked(fs.link).mockClear()
+    expect(await handlers.undoLatest()).toEqual({ status: 'busy' })
+    expect(fs.link).not.toHaveBeenCalled()
+    release()
+    await cleaning
   })
 })
 

@@ -2,6 +2,7 @@
 // No runtime code here may need Node or Electron: the renderer imports this file (types only) and
 // the preload bundles it.
 
+import type { BranchKind, ProjectTree } from './projects'
 import type {
   CleanOutcome,
   Finding,
@@ -10,6 +11,7 @@ import type {
   RestoreRecord,
   SessionEvent,
   Settings,
+  UndoOutcome,
   ViewNode
 } from './types'
 
@@ -24,6 +26,12 @@ export interface StashApi {
   onCleanProgress(cb: (done: number, total: number) => void): () => void
   getHistory(): Promise<HistoryEntry[]>
   restoreBatch(batchId: string): Promise<RestoreRecord>
+  /** Puts back the newest cleanup that still has items in the Recycle Bin. */
+  undoLatest(): Promise<UndoOutcome>
+  getProjects(): Promise<ProjectTree[]>
+  createProject(name: string, rootPath: string): Promise<ProjectTree>
+  addSubject(projectId: string, kind: BranchKind, name: string): Promise<ProjectTree>
+  removeSubject(projectId: string, subjectId: string): Promise<ProjectTree>
   getSettings(): Promise<Settings>
   saveSettings(s: Settings): Promise<Settings>
   pickFolder(): Promise<string | null>
@@ -50,6 +58,11 @@ export const INVOKE_NAMES: readonly StashInvokeName[] = [
   'clean',
   'getHistory',
   'restoreBatch',
+  'undoLatest',
+  'getProjects',
+  'createProject',
+  'addSubject',
+  'removeSubject',
   'getSettings',
   'saveSettings',
   'pickFolder',
