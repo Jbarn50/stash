@@ -38,3 +38,12 @@ test.afterAll(async () => {
 test('the startup scan of the fixture ends on Overview with a reclaimable line', async () => {
   await expect(page.getByText(/You could free about/)).toBeVisible({ timeout: 60_000 })
 })
+
+test('Explore lists the fixture folders and drills into Users', async () => {
+  await page.getByRole('tab', { name: 'Explore' }).click()
+  const row = page
+    .locator('table.list tbody tr')
+    .filter({ has: page.locator('.name', { hasText: /^Users$/ }) })
+  await row.click()
+  await expect(page.locator('.breadcrumb button').last()).toHaveText('Users')
+})
