@@ -112,6 +112,11 @@ describe('parsers', () => {
     ).toEqual({ MaxCapacity: 26343, NukeOnDelete: 0 })
   })
 
+  test('parseRegDwords keeps each value name exactly as printed, whatever its case', () => {
+    const text = '    nukeondelete    REG_DWORD    0x1\r\n    MAXCAPACITY    REG_DWORD    0x10\r\n'
+    expect(parseRegDwords(text)).toEqual({ nukeondelete: 1, MAXCAPACITY: 16 })
+  })
+
   test('parseRegDwords reads hexadecimal, tolerates LF line ends, and ignores what is not a DWORD', () => {
     const text = [
       '',
@@ -179,16 +184,55 @@ describe('binStatus', () => {
     ['NukeOnDelete is missing', { MaxCapacity: 100 }, noPolicy, unknown],
     ['NukeOnDelete is neither 0 nor 1', { NukeOnDelete: 2, MaxCapacity: 100 }, noPolicy, unknown],
     ['the volume has none of the values', {}, noPolicy, unknown],
-    // A policy that caps the bin may leave less room than MaxCapacity says, so nothing is certain.
+    // A policy that caps the bin may leave less room than MaxCapacity says, so nothing is certain,
+    // unless something already says that the bin is off: that is the truer thing to report.
     ['a size policy caps the bin, though the volume says on', on, capped, unknown],
     ['a size policy caps the bin and the volume could not be read', null, capped, unknown],
     [
-      'a size policy caps the bin and NukeOnDelete is 1',
+      'a size policy caps the bin but NukeOnDelete says it is off',
       { NukeOnDelete: 1, MaxCapacity: 100 },
       capped,
-      unknown
+      disabled
     ],
-    ['a size policy caps the bin but NoRecycleFiles turns it off', on, cappedAndOff, disabled]
+    [
+      'a size policy caps the bin but NukeOnDelete says it is off, with no MaxCapacity',
+      { NukeOnDelete: 1 },
+      capped,
+      disabled
+    ],
+    ['a size policy caps the bin but NoRecycleFiles turns it off', on, cappedAndOff, disabled],
+    // Registry value names are case-insensitive, and reg.exe prints them as they are stored.
+    [
+      'the value names are stored in lower case',
+      { nukeondelete: 0, maxcapacity: 100 },
+      noPolicy,
+      { status: 'enabled', maxCapacityBytes: 104_857_600 }
+    ],
+    [
+      'the value names are stored in upper case',
+      { NUKEONDELETE: 0, MAXCAPACITY: 100 },
+      noPolicy,
+      { status: 'enabled', maxCapacityBytes: 104_857_600 }
+    ],
+    [
+      'only NukeOnDelete is stored in lower case',
+      { nukeondelete: 0, MaxCapacity: 100 },
+      noPolicy,
+      { status: 'enabled', maxCapacityBytes: 104_857_600 }
+    ],
+    [
+      'only MaxCapacity is stored in lower case',
+      { NukeOnDelete: 0, maxcapacity: 100 },
+      noPolicy,
+      { status: 'enabled', maxCapacityBytes: 104_857_600 }
+    ],
+    ['NukeOnDelete is 1 and stored in lower case', { nukeondelete: 1 }, noPolicy, disabled],
+    [
+      'a size policy caps the bin, though a lower-case volume says on',
+      { nukeondelete: 0, maxcapacity: 100 },
+      capped,
+      unknown
+    ]
   ])('%s', (_name, volume, policy, expected) => {
     expect(binStatus(volume, policy)).toEqual(expected)
   })
@@ -808,6 +852,54 @@ describe('with the Windows tools faked', () => {
         })
       }
     )
+
+    test('a volume that is turned off is disabled, not unknown, even beside a RecycleBinSize policy', async () => {
+      const { getRecycleBinInfo } = await boot({
+        volume: { MaxCapacity: 26343, NukeOnDelete: 1 },
+        policies: { HKLM: { RecycleBinSize: 25 } }
+      })
+      failFs('readdir', BIN, 'EPERM') // its usage is not measured
+      expect(await getRecycleBinInfo('C:')).toEqual({
+        drive: 'C:',
+        status: 'disabled',
+        maxCapacityBytes: 0,
+        usedBytes: 0
+      })
+    })
+
+    // Registry value names are case-insensitive and reg.exe prints them as they are stored, so a
+    // policy or a volume setting stored as "norecyclefiles" is still that policy or setting.
+    test.each([
+      ['norecyclefiles in HKCU', { HKCU: { norecyclefiles: 1 } }],
+      ['NORECYCLEFILES in HKLM', { HKLM: { NORECYCLEFILES: 1 } }]
+    ])('the policy %s turns the bin off', async (_name, policies) => {
+      const { getRecycleBinInfo } = await boot({ policies })
+      expect((await getRecycleBinInfo('C:')).status).toBe('disabled')
+    })
+
+    test.each([
+      ['recyclebinsize in HKCU', { HKCU: { recyclebinsize: 25 } }],
+      ['RECYCLEBINSIZE in HKLM', { HKLM: { RECYCLEBINSIZE: 25 } }]
+    ])('the policy %s leaves the bin unknown', async (_name, policies) => {
+      const { getRecycleBinInfo } = await boot({ policies })
+      expect((await getRecycleBinInfo('C:')).status).toBe('unknown')
+    })
+
+    test('a volume key that prints nukeondelete and maxcapacity in lower case is an enabled bin', async () => {
+      const { getRecycleBinInfo } = await boot({ volume: { nukeondelete: 0, maxcapacity: 26343 } })
+      expect(await getRecycleBinInfo('C:')).toEqual({
+        drive: 'C:',
+        status: 'enabled',
+        maxCapacityBytes: 27_622_637_568,
+        usedBytes: 0
+      })
+    })
+
+    test('a volume key that prints nukeondelete as 1 in lower case is a disabled bin', async () => {
+      const { getRecycleBinInfo } = await boot({ volume: { nukeondelete: 1, MaxCapacity: 26343 } })
+      failFs('readdir', BIN, 'EPERM')
+      expect((await getRecycleBinInfo('C:')).status).toBe('disabled')
+    })
 
     test.each([
       ['mountvol fails', { mountvol: new Error('The system cannot find the file specified.') }],

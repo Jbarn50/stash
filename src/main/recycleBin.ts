@@ -106,24 +106,39 @@ export interface RecyclePolicy {
 }
 
 /**
+ * The DWORD called `name` in `values`, or undefined if there is none or `values` is null. Registry
+ * value names are case-insensitive and reg.exe prints them as they are stored, so `norecyclefiles`
+ * is NoRecycleFiles: missing it would read a policy as not set.
+ */
+function dwordNamed(values: Record<string, number> | null, name: string): number | undefined {
+  if (values === null) return undefined
+  const wanted = name.toLowerCase()
+  const stored = Object.keys(values).find((key) => key.toLowerCase() === wanted)
+  return stored === undefined ? undefined : values[stored]
+}
+
+/**
  * Whether files deleted on a drive go to its Recycle Bin, and how much the bin may hold.
  * `volume` is the drive's BitBucket values from the registry, or null when they could not be read.
  * `policy` is Group Policy. NoRecycleFiles makes Explorer delete for good and overrides the volume.
- * A size policy may cap the bin below MaxCapacity, so that capacity cannot be trusted: unknown.
- * Only a bin that is plainly on counts as enabled: anything unclear is unknown, because Windows
- * silently purges or permanently deletes what does not fit. `maxCapacityBytes` is 0 unless enabled.
+ * A volume that is itself off is disabled whatever else is set, which is the truer thing to say.
+ * Otherwise a size policy may cap the bin below MaxCapacity, so that capacity cannot be trusted:
+ * unknown. Only a bin that is plainly on counts as enabled: anything unclear is unknown, because
+ * Windows silently purges or permanently deletes what does not fit. `maxCapacityBytes` is 0 unless
+ * enabled.
  */
 export function binStatus(
   volume: Record<string, number> | null,
   policy: RecyclePolicy
 ): Pick<RecycleBinInfo, 'status' | 'maxCapacityBytes'> {
+  const nukeOnDelete = dwordNamed(volume, 'NukeOnDelete')
   if (policy.noRecycleFiles) return { status: 'disabled', maxCapacityBytes: 0 }
+  if (nukeOnDelete === 1) return { status: 'disabled', maxCapacityBytes: 0 }
   if (policy.sizeCapped) return { status: 'unknown', maxCapacityBytes: 0 }
-  if (volume === null) return { status: 'unknown', maxCapacityBytes: 0 }
-  if (volume.NukeOnDelete === 1) return { status: 'disabled', maxCapacityBytes: 0 }
-  if (volume.NukeOnDelete === 0 && volume.MaxCapacity !== undefined) {
+  const maxCapacity = dwordNamed(volume, 'MaxCapacity')
+  if (nukeOnDelete === 0 && maxCapacity !== undefined) {
     // MaxCapacity is in megabytes.
-    return { status: 'enabled', maxCapacityBytes: volume.MaxCapacity * BYTES_PER_MB }
+    return { status: 'enabled', maxCapacityBytes: maxCapacity * BYTES_PER_MB }
   }
   return { status: 'unknown', maxCapacityBytes: 0 }
 }
@@ -165,8 +180,8 @@ async function readRecyclePolicy(): Promise<RecyclePolicy> {
     })
   )
   return {
-    noRecycleFiles: hives.some((values) => (values.NoRecycleFiles ?? 0) !== 0),
-    sizeCapped: hives.some((values) => values.RecycleBinSize !== undefined)
+    noRecycleFiles: hives.some((values) => (dwordNamed(values, 'NoRecycleFiles') ?? 0) !== 0),
+    sizeCapped: hives.some((values) => dwordNamed(values, 'RecycleBinSize') !== undefined)
   }
 }
 
