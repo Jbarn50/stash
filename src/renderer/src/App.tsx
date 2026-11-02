@@ -1,34 +1,38 @@
-import Versions from './components/Versions'
-import electronLogo from './assets/electron.svg'
+import { useState } from 'react'
+import { useSession } from './lib/useSession'
+import Overview from './screens/Overview'
+
+const TABS = ['Overview', 'Explore', 'Cleanup', 'History', 'Settings'] as const
+type Tab = (typeof TABS)[number]
 
 function App(): React.JSX.Element {
-  const ipcHandle = (): void => window.electron.ipcRenderer.send('ping')
+  const session = useSession()
+  const [tab, setTab] = useState<Tab>('Overview')
 
   return (
-    <>
-      <img alt="logo" className="logo" src={electronLogo} />
-      <div className="creator">Powered by electron-vite</div>
-      <div className="text">
-        Build an Electron app with <span className="react">React</span>
-        &nbsp;and <span className="ts">TypeScript</span>
-      </div>
-      <p className="tip">
-        Please try pressing <code>F12</code> to open the devTool
-      </p>
-      <div className="actions">
-        <div className="action">
-          <a href="https://electron-vite.org/" target="_blank" rel="noreferrer">
-            Documentation
-          </a>
+    <div className="app">
+      <nav className="sidebar" aria-label="Modules">
+        <div className="brand">Stash</div>
+        <button className="module" aria-current="page">
+          Space
+        </button>
+      </nav>
+      <main className="content">
+        <div className="tabs" role="tablist">
+          {TABS.map((t) => (
+            <button key={t} role="tab" aria-selected={tab === t} onClick={() => setTab(t)}>
+              {t}
+            </button>
+          ))}
         </div>
-        <div className="action">
-          <a target="_blank" rel="noreferrer" onClick={ipcHandle}>
-            Send IPC
-          </a>
-        </div>
-      </div>
-      <Versions></Versions>
-    </>
+        {tab === 'Overview' && <Overview session={session} />}
+        {tab !== 'Overview' && (
+          <div className="screen">
+            <p className="muted">{tab} is not built yet.</p>
+          </div>
+        )}
+      </main>
+    </div>
   )
 }
 
