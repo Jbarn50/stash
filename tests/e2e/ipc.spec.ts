@@ -53,6 +53,12 @@ test('window.stash is the whole API and answers before any scan', async () => {
       'createProject',
       'addSubject',
       'removeSubject',
+      'pickImages',
+      'readImportImage',
+      'previewImport',
+      'confirmImport',
+      'undoOrganize',
+      'getSubjectHashes',
       'saveSettings',
       'showItem',
       'startScan'

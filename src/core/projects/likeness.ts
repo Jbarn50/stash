@@ -1,3 +1,5 @@
+import { folderSegment } from './tree'
+
 // How an import decides that two generated files are the same kind of thing,
 // using workflow metadata only. Seed is not part of the key: two seeds of one
 // prompt belong in one group. A file with nothing to group on returns null,
@@ -32,4 +34,29 @@ export function likenessKey(meta: WorkflowMeta): string | null {
   if (prompt === '') return null
   const model = meta.model === null ? '' : norm(meta.model)
   return `prompt:${model}\n${prompt}`
+}
+
+const NOISE =
+  /^(masterpiece|best quality|high quality|highres|highly detailed|ultra detailed|8k|4k|sharp focus|detailed|realistic)$/i
+
+/**
+ * A folder segment suggested from the prompt, or null when the prompt has nothing
+ * safe to use as a name. The person can edit it before anything moves.
+ */
+export function suggestFolderName(meta: WorkflowMeta): string | null {
+  if (meta.prompt === null) return null
+  for (const raw of meta.prompt.split(/[,\n]/)) {
+    const cleaned = raw
+      .replace(/<[^>]*>/g, ' ')
+      .replace(/\([^)]*\)/g, ' ')
+      .replace(/[<>:"/\\|?*]/g, ' ')
+      .replace(/[. ]+$/g, '')
+      .trim()
+      .replace(/\s+/g, ' ')
+    if (cleaned === '' || NOISE.test(cleaned)) continue
+    const words = cleaned.split(' ').slice(0, 4).join(' ')
+    const segment = folderSegment(words)
+    if (segment !== null && !NOISE.test(segment)) return segment
+  }
+  return null
 }

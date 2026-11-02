@@ -167,6 +167,14 @@ function harness(over: Partial<HandlerDeps> = {}): Harness {
       addSubject: vi.fn(),
       removeSubject: vi.fn()
     },
+    imports: {
+      pickImages: vi.fn(async () => null),
+      readImage: vi.fn(async () => null),
+      preview: vi.fn(async () => ({ groups: [], skipped: [] })),
+      confirm: vi.fn(),
+      undo: vi.fn(async () => ({ status: 'nothing' as const, movedBack: 0, failed: 0 })),
+      subjectHashes: vi.fn(async () => ({}))
+    },
     driveUsage: vi.fn(async (roots: string[]) =>
       roots.map((root) => ({ root, totalBytes: 10, freeBytes: 5 }))
     ),

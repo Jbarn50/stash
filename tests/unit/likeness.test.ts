@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest'
-import { likenessKey, type WorkflowMeta } from '../../src/core/projects/likeness'
+import { likenessKey, suggestFolderName, type WorkflowMeta } from '../../src/core/projects/likeness'
 
 const meta = (over: Partial<WorkflowMeta>): WorkflowMeta => ({
   source: 'unknown',
@@ -49,5 +49,14 @@ describe('workflow likeness', () => {
     expect(mara).not.toBe(pines)
     expect(likenessKey(meta({ seed: '4' }))).toBeNull()
     expect(likenessKey(meta({ prompt: '   ' }))).toBeNull()
+  })
+
+  test('a folder suggestion is the first usable clause of the prompt', () => {
+    expect(suggestFolderName(meta({ prompt: 'Mara, mist pines' }))).toBe('Mara')
+    expect(suggestFolderName(meta({ prompt: 'masterpiece, Mara in the pines' }))).toBe(
+      'Mara in the pines'
+    )
+    expect(suggestFolderName(meta({ prompt: '   ' }))).toBeNull()
+    expect(suggestFolderName(meta({ prompt: null }))).toBeNull()
   })
 })

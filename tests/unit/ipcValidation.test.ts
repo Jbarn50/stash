@@ -3,9 +3,11 @@ import {
   forwarder,
   parseBatchId,
   parseBoolean,
+  parseConfirmedGroups,
   parseDepth,
   parseFindingIds,
   parseFolderId,
+  parseImportFiles,
   parseItemRef,
   parseScanRoot,
   startupScanRoot
@@ -103,10 +105,10 @@ test('startupScanRoot takes a valid --scan= root and ignores anything else', () 
 
 test('channels: stash:<name> for each invoke method, and the two event channels', () => {
   for (const name of INVOKE_NAMES) expect(CHANNELS[name]).toBe(`stash:${name}`)
-  expect(INVOKE_NAMES).toHaveLength(22)
+  expect(INVOKE_NAMES).toHaveLength(28)
   expect(CHANNELS.onSessionEvent).toBe('stash:session-event')
   expect(CHANNELS.onCleanProgress).toBe('stash:clean-progress')
-  expect(new Set(Object.values(CHANNELS)).size).toBe(24)
+  expect(new Set(Object.values(CHANNELS)).size).toBe(30)
 })
 
 test('the forwarder sends to a live window and never throws', () => {
@@ -136,4 +138,39 @@ test('the forwarder sends to a live window and never throws', () => {
   ).not.toThrow()
   expect(error).toHaveBeenCalledTimes(2)
   error.mockRestore()
+})
+
+test('import arguments are plain image paths and dHashes', () => {
+  expect(parseImportFiles([{ path: 'd:/imports/a.png', dhash: null }])).toEqual([
+    { path: 'D:\\imports\\a.png', dhash: null }
+  ])
+  expect(parseImportFiles([{ path: 'D:\\imports\\a.png', dhash: '0000000000000001' }])).toEqual([
+    { path: 'D:\\imports\\a.png', dhash: '0000000000000001' }
+  ])
+  expect(() => parseImportFiles([{ path: '\\\\server\\share\\a.png', dhash: null }])).toThrow(
+    INVALID
+  )
+  expect(() => parseImportFiles([])).toThrow(INVALID)
+  expect(() =>
+    parseConfirmedGroups([
+      {
+        branch: 'character',
+        folder: 'Mara',
+        subjectId: null,
+        paths: ['D:\\imports\\a.png'],
+        hashes: [null]
+      }
+    ])
+  ).not.toThrow()
+  expect(() =>
+    parseConfirmedGroups([
+      {
+        branch: 'nope',
+        folder: 'Mara',
+        subjectId: null,
+        paths: ['D:\\imports\\a.png'],
+        hashes: [null]
+      }
+    ])
+  ).toThrow(INVALID)
 })
