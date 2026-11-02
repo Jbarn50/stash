@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import mark from './assets/stash-mark.png'
 import { useSession } from './lib/useSession'
 import Cleanup from './screens/Cleanup'
 import Explore from './screens/Explore'
@@ -16,7 +17,10 @@ function App(): React.JSX.Element {
   return (
     <div className="app">
       <nav className="sidebar" aria-label="Modules">
-        <div className="brand">Stash</div>
+        <div className="brand">
+          <img className="brand-mark" src={mark} alt="" />
+          Stash
+        </div>
         <button className="module" aria-current="page">
           Space
         </button>
