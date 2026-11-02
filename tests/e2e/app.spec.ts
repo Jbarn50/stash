@@ -47,3 +47,12 @@ test('Explore lists the fixture folders and drills into Users', async () => {
   await row.click()
   await expect(page.locator('.breadcrumb button').last()).toHaveText('Users')
 })
+
+test('Cleanup lists the fixture .blend1 under Dev & creative leftovers, unselected', async () => {
+  await page.getByRole('tab', { name: 'Cleanup' }).click()
+  const card = page.getByRole('region', { name: 'Dev & creative leftovers' })
+  await card.getByRole('button', { name: 'Show Dev & creative leftovers' }).click()
+  const box = card.getByRole('checkbox', { name: /scene\.blend1$/ })
+  await expect(box).toBeVisible()
+  await expect(box).not.toBeChecked()
+})
