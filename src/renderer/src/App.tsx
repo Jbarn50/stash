@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { useSession } from './lib/useSession'
+import Cleanup from './screens/Cleanup'
 import Explore from './screens/Explore'
 import Overview from './screens/Overview'
 
@@ -30,7 +31,8 @@ function App(): React.JSX.Element {
         {tab === 'Explore' && (
           <Explore key={session.summary?.scanId ?? 'none'} summary={session.summary} />
         )}
-        {tab !== 'Overview' && tab !== 'Explore' && (
+        {tab === 'Cleanup' && <Cleanup key={session.summary?.scanId ?? 'none'} session={session} />}
+        {(tab === 'History' || tab === 'Settings') && (
           <div className="screen">
             <p className="muted">{tab} is not built yet.</p>
           </div>
