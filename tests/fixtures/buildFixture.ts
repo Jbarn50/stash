@@ -20,11 +20,15 @@ export interface Fixture {
 }
 
 /**
- * A throwaway folder tree under the OS temp folder that holds one example of everything the scanner
- * and detectors must handle. Each file gets its own random bytes unless a row says otherwise, so the
- * only duplicates are the ones meant to be.
+ * A throwaway folder tree that holds one example of everything the scanner and detectors must
+ * handle. Each file gets its own random bytes unless a row says otherwise, so the only duplicates are
+ * the ones meant to be.
+ *
+ * It goes under the OS temp folder unless `under` names another folder. A test whose cleanup really
+ * reaches the Recycle Bin passes `<repo>/.test-recycle`: an MSIX-packaged shell may redirect writes
+ * under %TEMP%, and Windows would then record a different path in the `$I` file.
  */
-export async function buildFixture(): Promise<Fixture> {
+export async function buildFixture(options: { under?: string } = {}): Promise<Fixture> {
   const now = Date.now()
   const old = now - 400 * DAY
   const monthsAgo = (n: number): number => {
@@ -34,7 +38,7 @@ export async function buildFixture(): Promise<Fixture> {
   }
 
   // realpath expands an 8.3 temp folder (C:\Users\RUNNER~1\...) so every env path stays plain.
-  const root = realpathSync.native(await mkdtemp(join(tmpdir(), 'stash-fx-')))
+  const root = realpathSync.native(await mkdtemp(join(options.under ?? tmpdir(), 'stash-fx-')))
   const profile = join(root, 'Users', 'tester')
   const local = join(profile, 'AppData', 'Local')
   const env: WinEnv = {
