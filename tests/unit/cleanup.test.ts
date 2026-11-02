@@ -467,6 +467,24 @@ test('duplicates are skipped when no other copy would remain, including when the
   expect(existsSync(remains.path)).toBe(true)
 })
 
+test('a duplicate is skipped when the copy kept back has changed since the scan', async () => {
+  // The kept copy no longer holds what the scan hashed, so the selected copy is the last one of it.
+  const group = { groupId: 's1:dup:7' }
+  const selected = await scanned(await put(join(env.temp, 'c7.bin')), group)
+  const keeper = await scanned(await put(join(env.documents, 'k7.bin')), {
+    ...group,
+    suggestedKeep: true
+  })
+  await writeFile(keeper.path, 'overwritten since the scan')
+  const h = harness()
+
+  const batch = batchOf(await runCleanup([selected], [selected, keeper], false, h.deps))
+
+  expect(summary(batch)).toEqual(['skipped: would remove every copy'])
+  expect(h.trash).not.toHaveBeenCalled()
+  expect(existsSync(selected.path)).toBe(true)
+})
+
 test('a failed move is skipped with the reason and a Chrome tip', async () => {
   const cache = await put(
     join(env.localAppData, 'Google', 'Chrome', 'User Data', 'Default', 'Cache', 'data_0')

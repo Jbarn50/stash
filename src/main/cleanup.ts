@@ -168,19 +168,14 @@ function firstOverflow(
   return null
 }
 
-async function isFileNow(path: string): Promise<boolean> {
-  try {
-    return (await lstat(path)).isFile()
-  } catch {
-    return false
-  }
-}
-
-/** True when a copy in the group that is not part of this cleanup still exists, as a file. */
+/**
+ * True when a copy in the group that is not part of this cleanup is still there, unchanged since the
+ * scan. A copy overwritten since then no longer holds what the scan found, so it does not count.
+ */
 async function anotherCopyRemains(groupId: string, ctx: Context): Promise<boolean> {
   const unselected = (ctx.groups.get(groupId) ?? []).filter((copy) => !ctx.selectedIds.has(copy.id))
   for (const copy of unselected) {
-    if (await isFileNow(copy.path)) return true
+    if (await unchangedSinceScan(copy)) return true
   }
   return false
 }
