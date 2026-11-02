@@ -4,7 +4,13 @@ import type { ScanProgressPayload } from '../../src/core/scan/scanTree'
 import { MiB, validateSettings } from '../../src/core/settings'
 import type { ScanTree } from '../../src/core/tree'
 import { ScanSession, type HashRunner, type ScanRunner } from '../../src/main/session'
-import type { CleanOutcome, Finding, SessionEvent, SessionState } from '../../src/shared/types'
+import type {
+  CleanOutcome,
+  Finding,
+  SessionEvent,
+  SessionState,
+  Settings
+} from '../../src/shared/types'
 import type { ScanDone, ScanJob } from '../../src/workers/protocol'
 import { SAMPLE_ENV } from '../helpers/env'
 import { treeFrom } from '../helpers/treeFrom'
@@ -123,6 +129,8 @@ const aborted = (signal: AbortSignal): Promise<void> =>
 interface Script {
   scan?: ScanRunner['run']
   hash?: HashRunner['run']
+  /** The settings the session reads; they can change while a scan runs. */
+  getSettings?: () => Settings
   onEmit?: (e: SessionEvent) => void
 }
 
@@ -149,7 +157,7 @@ function harness(script: Script = {}): Harness {
   const session: ScanSession = new ScanSession({
     scanRunner: { run: scan },
     hashRunner: { run: hash },
-    getSettings: () => SETTINGS,
+    getSettings: script.getSettings ?? (() => SETTINGS),
     env: SAMPLE_ENV,
     emit: (e) => {
       events.push(e)
@@ -201,7 +209,10 @@ interface Copy {
  * A scan that finds only duplicates. Every file of a group has the group's size, and the copies keep
  * the order given: their findings are numbered duplicates:0, duplicates:1, ... across the groups.
  */
-function harnessWithGroups(groups: { size: number; copies: Copy[] }[]): Harness {
+function harnessWithGroups(
+  groups: { size: number; copies: Copy[] }[],
+  script: Pick<Script, 'getSettings'> = {}
+): Harness {
   const files = groups.flatMap((g) => g.copies.map((c) => ({ ...c, size: g.size })))
   const entries = Object.fromEntries(
     files.map((f) => [f.path.slice(ROOT.length), { size: f.size, mtimeMs: f.mtimeMs }])
@@ -209,6 +220,7 @@ function harnessWithGroups(groups: { size: number; copies: Copy[] }[]): Harness 
   let next = 0
   const fileIds = groups.map((g) => g.copies.map(() => next++))
   return harness({
+    ...script,
     scan: async (job) =>
       scanDone(job, {
         tree: treeFrom(ROOT, entries).toData(),
@@ -772,6 +784,48 @@ describe('changing the results after a scan', () => {
   })
 })
 
+describe('exclusions saved while a scan runs', () => {
+  // The worker is started with the settings of the moment, so it cannot know about these.
+  const TEMP_FOLDER = 'C:\\Users\\jorda\\AppData\\Local\\Temp'
+  const INSIDE_UPDATE_FOLDER = 'C:\\Windows\\SoftwareDistribution\\Download\\keep'
+
+  test.each<[string, boolean, string[]]>([
+    // [how the scan ends, whether it is cancelled, the findings that are left]
+    ['finishes', false, ['duplicates:0', 'duplicates:1']],
+    ['is cancelled', true, []]
+  ])('apply to the results of a scan that %s', async (_ends, cancelled, left) => {
+    let current = SETTINGS
+    const entered = deferred()
+    const release = deferred()
+    const h = harness({
+      getSettings: () => current,
+      scan: async (job, _onProgress, signal) => {
+        entered.resolve()
+        await (cancelled ? aborted(signal) : release.promise)
+        return scanDone(job, { incomplete: cancelled })
+      }
+    })
+    const scanId = h.session.start(ROOT)
+    await entered.promise
+
+    // Saved after the start: the temp folder (it holds temp-user:0) and a folder inside the one
+    // sys-windows-update:1 is about, which recycling that folder would take along.
+    current = validateSettings({ exclusions: [TEMP_FOLDER, INSIDE_UPDATE_FOLDER] })
+    if (cancelled) h.session.cancel()
+    else release.resolve()
+    await h.settled()
+
+    expect(h.scan.mock.calls[0][0].settings.exclusions).toEqual([]) // what the worker was given
+    expect(idsOf(h.session)).toEqual(left.map((rest) => `${scanId}:${rest}`))
+    expect(h.session.latest!.summary).toMatchObject({
+      incomplete: cancelled,
+      reclaimable: cancelled ? 0 : 5 * MiB, // the Downloads copy, as the Pictures copy is the keeper
+      byCategory: { duplicates: cancelled ? 0 : 5 * MiB, tempCaches: 0 },
+      windowsCanClean: 0
+    })
+  })
+})
+
 describe('duplicate groups after copies are removed', () => {
   // suggestKeeper prefers a copy outside Downloads, Temp and Desktop, then the oldest, then the
   // shortest path. That makes Pictures\Keep the copy to keep in both groups of three below.
@@ -893,6 +947,37 @@ describe('duplicate groups after copies are removed', () => {
     expect(h.session.latest!.summary).toMatchObject({
       reclaimable: 10 * MiB,
       byCategory: { duplicates: 10 * MiB }
+    })
+  })
+
+  test('an exclusion saved while the scan runs also tidies the duplicate groups of its results', async () => {
+    let current = SETTINGS
+    const h = harnessWithGroups([{ size: 5 * MiB, copies: [downloads, keep, other] }], {
+      getSettings: () => current
+    })
+    const entered = deferred()
+    const release = deferred()
+    const hold = h.scan.getMockImplementation()!
+    h.scan.mockImplementation(async (...args) => {
+      entered.resolve()
+      await release.promise
+      return hold(...args)
+    })
+    h.session.start(ROOT)
+    await entered.promise
+
+    current = validateSettings({ exclusions: [KEEP_FOLDER] })
+    release.resolve()
+    await h.settled()
+
+    // The keeper's folder is excluded, so the copy outside Downloads takes over.
+    expect(copiesLeft(h.session)).toEqual([
+      [downloads.path, false],
+      [other.path, true]
+    ])
+    expect(h.session.latest!.summary).toMatchObject({
+      reclaimable: 5 * MiB,
+      byCategory: { duplicates: 5 * MiB }
     })
   })
 })

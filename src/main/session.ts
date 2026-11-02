@@ -59,6 +59,7 @@ export interface LatestScan {
 export interface SessionDeps {
   scanRunner: ScanRunner
   hashRunner: HashRunner
+  /** Read when a scan starts, for the worker, and again when it ends, for exclusions saved meanwhile. */
   getSettings(): Settings
   env: WinEnv
   emit(e: SessionEvent): void
@@ -277,6 +278,14 @@ export class ScanSession {
           error = errorMessage(e)
         }
       }
+
+      // Exclusions saved while the scan ran apply to what it found, finished or not. They are read
+      // again here: the settings the worker was started with do not have them.
+      const { exclusions } = deps.getSettings()
+      findings = normalizeDuplicateGroups(
+        findings.filter((f) => !isExcluded(f, exclusions)),
+        deps.env
+      )
 
       const summary = buildSummary({
         scanId,
