@@ -23,7 +23,9 @@ describe.runIf(process.platform === 'win32')('detectors on the fixture', () => {
         tree,
         env: fx.env,
         settings: fx.settings,
-        now: Date.now()
+        now: Date.now(),
+        // The fixture's six small frames stand in for a real sequence.
+        limits: { imageSeqMinFiles: 5, imageSeqMinBytes: 307200 }
       })
     )
     rules = Object.fromEntries(findings.map((f) => [f.path, f.ruleId]))
@@ -45,6 +47,16 @@ describe.runIf(process.platform === 'win32')('detectors on the fixture', () => {
     expect(rules[win32.join(fx.root, 'Windows', 'SoftwareDistribution', 'Download')]).toBe(
       'sys-windows-update'
     )
+  })
+
+  test('dev and creative leftovers on the fixture', () => {
+    expect(rules[win32.join(fx.p.webapp, 'node_modules')]).toBe('dev-node-modules')
+    expect(rules[win32.join(fx.p.active, 'node_modules')]).toBeUndefined()
+    expect(rules[win32.join(fx.p.unity, 'Library')]).toBe('unity-library')
+    expect(rules[win32.join(fx.p.venv, '.venv')]).toBe('dev-python-venv')
+    expect(rules[fx.p.blend1]).toBe('blender-backups')
+    expect(rules[fx.p.blend]).toBeUndefined()
+    expect(rules[fx.p.frames]).toBe('image-sequences')
   })
 
   test('no path is reported twice', () => {

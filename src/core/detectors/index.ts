@@ -2,6 +2,7 @@ import type { Finding } from '../../shared/types'
 import { isBlocked } from '../blocklist'
 import { isSameOrInside } from '../paths'
 import type { DetectorContext } from './context'
+import { detectDevLeftovers } from './devLeftovers'
 import { detectInstallersStale } from './installersStale'
 import { detectSystem } from './system'
 import { detectTempCaches } from './tempCaches'
@@ -12,7 +13,12 @@ import { detectTempCaches } from './tempCaches'
  * blocked path (info findings sit in blocked places by nature and are never cleaned).
  */
 export function runStaticDetectors(ctx: DetectorContext): Finding[] {
-  const findings = [...detectSystem(ctx), ...detectTempCaches(ctx), ...detectInstallersStale(ctx)]
+  const findings = [
+    ...detectSystem(ctx),
+    ...detectTempCaches(ctx),
+    ...detectDevLeftovers(ctx),
+    ...detectInstallersStale(ctx)
+  ]
   return findings.filter(
     (f) =>
       !ctx.settings.exclusions.some((excluded) => isSameOrInside(f.path, excluded)) &&
