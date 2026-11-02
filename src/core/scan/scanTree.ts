@@ -1,5 +1,6 @@
 import type { Dirent, Stats } from 'node:fs'
 import type { ScanProgress } from '../../shared/types'
+import { errorMessage } from '../errorMessage'
 import { normalizePath } from '../paths'
 import { isMarkerFile } from '../rules/markers'
 import { ScanTree } from '../tree'
@@ -22,11 +23,13 @@ export interface ScanOptions {
 
 export interface ScanResult {
   tree: ScanTree
-  /** True when the scan was cancelled before it finished. */
+  /** True when the scan was cancelled or failed before it finished. */
   incomplete: boolean
   durationMs: number
   foldersScanned: number
   filesScanned: number
+  /** Set when something unexpected went wrong in the walk. The tree is whatever was built by then. */
+  error?: string
 }
 
 const DRIVE_ROOT = /^[A-Z]:\\$/
@@ -43,6 +46,9 @@ function joinPath(folder: string, name: string): string {
 /**
  * Walks `root` without following junctions or symlinks and builds a ScanTree. Folders it cannot read
  * are marked unreadable and files it cannot measure are listed as unmeasured; the walk carries on.
+ * An unexpected error in the walk (a progress callback that throws, say) stops it the way an abort
+ * does: the partial tree comes back, marked incomplete, with the message in `error`. Only a root that
+ * cannot be read at all makes it throw.
  */
 export async function scanTree(opts: ScanOptions, deps: FsDeps = nodeFsDeps): Promise<ScanResult> {
   const started = Date.now()
@@ -56,7 +62,9 @@ export async function scanTree(opts: ScanOptions, deps: FsDeps = nodeFsDeps): Pr
   let filesScanned = 0
   let currentPath = root
   let lastProgress = -Infinity
+  let failure: string | undefined
   const aborted = (): boolean => opts.signal?.aborted ?? false
+  const stopped = (): boolean => aborted() || failure !== undefined
 
   const reportProgress = (force: boolean): void => {
     if (!opts.onProgress) return
@@ -134,7 +142,7 @@ export async function scanTree(opts: ScanOptions, deps: FsDeps = nodeFsDeps): Pr
     }
     const subfolders: { id: number; path: string }[] = []
     for (const entry of entries) {
-      if (aborted()) break
+      if (stopped()) break
       const childId = await addEntry(folderId, folderPath, entry)
       if (childId !== null) subfolders.push({ id: childId, path: joinPath(folderPath, entry.name) })
     }
@@ -145,9 +153,9 @@ export async function scanTree(opts: ScanOptions, deps: FsDeps = nodeFsDeps): Pr
   const queue: { id: number; path: string }[] = [{ id: 0, path: root }]
   let head = 0
   let active = 0
-  await new Promise<void>((resolve, reject) => {
+  await new Promise<void>((resolve) => {
     const pump = (): void => {
-      while (active < concurrency && head < queue.length && !aborted()) {
+      while (active < concurrency && head < queue.length && !stopped()) {
         const next = queue[head++]
         active++
         visit(next.id, next.path)
@@ -155,10 +163,12 @@ export async function scanTree(opts: ScanOptions, deps: FsDeps = nodeFsDeps): Pr
             for (const subfolder of subfolders) queue.push(subfolder)
             reportProgress(false)
           })
-          .catch(reject)
+          .catch((e) => {
+            failure ??= errorMessage(e) // stops the walk; the tree built so far is kept
+          })
           .finally(() => {
             active--
-            if (active === 0 && (head >= queue.length || aborted())) resolve()
+            if (active === 0 && (head >= queue.length || stopped())) resolve()
             else pump()
           })
       }
@@ -167,7 +177,7 @@ export async function scanTree(opts: ScanOptions, deps: FsDeps = nodeFsDeps): Pr
     if (active === 0) resolve()
   })
 
-  const incomplete = aborted()
+  const incomplete = stopped()
   const rootNode = tree.folders[0]
   if (!incomplete && DRIVE_ROOT.test(root) && rootNode.unmeasured.length > 0) {
     const sizes = await deps
@@ -189,6 +199,17 @@ export async function scanTree(opts: ScanOptions, deps: FsDeps = nodeFsDeps): Pr
     }
   }
 
-  reportProgress(true)
-  return { tree, incomplete, durationMs: Date.now() - started, foldersScanned, filesScanned }
+  try {
+    reportProgress(true)
+  } catch (e) {
+    failure ??= errorMessage(e)
+  }
+  return {
+    tree,
+    incomplete: stopped(),
+    durationMs: Date.now() - started,
+    foldersScanned,
+    filesScanned,
+    ...(failure === undefined ? {} : { error: failure })
+  }
 }

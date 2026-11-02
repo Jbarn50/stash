@@ -147,6 +147,42 @@ describe.runIf(process.platform === 'win32')('scanTree on the fixture', () => {
     expect(r.tree.folders[0].sizeOnDisk).toBeLessThan(fx.expectedSizeOnDisk)
   })
 
+  test('an error inside the walk ends it like an abort: the partial tree comes back with the error', async () => {
+    // A throwing onProgress is how the walk is made to fail. It throws again on the final report,
+    // which must not lose the tree either.
+    const r = await scanTree({
+      root: fx.root,
+      trackFileMinBytes: TRACK,
+      progressIntervalMs: 0,
+      onProgress: () => {
+        throw new Error('boom')
+      }
+    })
+    expect(r.incomplete).toBe(true)
+    expect(r.error).toContain('boom')
+    expect(r.tree.folders[0].sizeOnDisk).toBeLessThan(fx.expectedSizeOnDisk)
+  })
+
+  test('a failure in the very last progress report keeps the finished tree and still reports the error', async () => {
+    let reports = 0
+    const r = await scanTree({
+      root: fx.root,
+      trackFileMinBytes: TRACK,
+      progressIntervalMs: 1e9, // only the first report and the forced final one
+      onProgress: () => {
+        if (++reports === 2) throw new Error('late')
+      }
+    })
+    expect(r.error).toBe('late')
+    expect(r.incomplete).toBe(true) // an error always comes with incomplete: true
+    expect(r.tree.folders[0].sizeOnDisk).toBe(fx.expectedSizeOnDisk)
+  })
+
+  test('a scan that finishes without an error carries none', async () => {
+    const r = await scanTree({ root: fx.root, trackFileMinBytes: TRACK })
+    expect(r.error).toBeUndefined()
+  })
+
   test('progress reports counts and the largest top-level folders', async () => {
     const seen: ScanProgressPayload[] = []
     await scanTree({
