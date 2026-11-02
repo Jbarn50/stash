@@ -37,6 +37,13 @@ const stash: StashApi = {
     ipcRenderer.invoke(CHANNELS.addSubject, projectId, kind, name),
   removeSubject: (projectId, subjectId) =>
     ipcRenderer.invoke(CHANNELS.removeSubject, projectId, subjectId),
+  pickImages: () => ipcRenderer.invoke(CHANNELS.pickImages),
+  readImportImage: (path) => ipcRenderer.invoke(CHANNELS.readImportImage, path),
+  previewImport: (projectId, files) => ipcRenderer.invoke(CHANNELS.previewImport, projectId, files),
+  confirmImport: (projectId, groups) =>
+    ipcRenderer.invoke(CHANNELS.confirmImport, projectId, groups),
+  undoOrganize: () => ipcRenderer.invoke(CHANNELS.undoOrganize),
+  getSubjectHashes: () => ipcRenderer.invoke(CHANNELS.getSubjectHashes),
   getSettings: () => ipcRenderer.invoke(CHANNELS.getSettings),
   saveSettings: (s) => ipcRenderer.invoke(CHANNELS.saveSettings, s),
   pickFolder: () => ipcRenderer.invoke(CHANNELS.pickFolder),

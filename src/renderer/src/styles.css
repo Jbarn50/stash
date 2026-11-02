@@ -622,3 +622,53 @@ table.list tr.clickable:hover {
   padding: 12px;
   margin: 12px 0;
 }
+
+.import-preview {
+  margin-top: 12px;
+}
+
+.import-group {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin: 10px 0;
+}
+
+.import-thumbs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 8px 0;
+}
+
+.import-thumbs img,
+.import-file {
+  width: 72px;
+  height: 72px;
+  object-fit: cover;
+  border-radius: 6px;
+  background: var(--surface-2);
+}
+
+.import-file {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  font-size: 11px;
+  padding: 4px;
+  overflow-wrap: anywhere;
+}
+
+.import-nearby {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin: 6px 0;
+}
+
+.import-group label {
+  display: grid;
+  gap: 4px;
+  font-size: 13px;
+}

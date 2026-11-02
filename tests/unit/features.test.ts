@@ -2,13 +2,13 @@ import { describe, expect, test } from 'vitest'
 import { FEATURES, requireFeature } from '../../src/core/features'
 
 describe('feature flags', () => {
-  test('undo is on, and organize stays off until it can move files safely', () => {
+  test('undo and organize are on', () => {
     expect(FEATURES.undo).toBe(true)
-    expect(FEATURES.organize).toBe(false)
+    expect(FEATURES.organize).toBe(true)
   })
 
-  test('organize refuses, and undo is allowed through', () => {
-    expect(() => requireFeature('organize')).toThrow(/feature off: organize/)
+  test('undo and organize are allowed through', () => {
     expect(() => requireFeature('undo')).not.toThrow()
+    expect(() => requireFeature('organize')).not.toThrow()
   })
 })

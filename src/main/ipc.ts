@@ -1,9 +1,18 @@
 import { dialog, ipcMain, type BrowserWindow, type IpcMainInvokeEvent } from 'electron'
 import { requireFeature } from '../core/features'
 import { isPlainDrivePath, normalizePath, pathKey } from '../core/paths'
+import { isDHash } from '../shared/dhash'
 import type { ScanTree } from '../core/tree'
 import { buildFolderView } from '../core/view'
 import { CHANNELS, INVOKE_NAMES, type StashApi, type StashInvokeName } from '../shared/ipc'
+import type {
+  ConfirmedGroup,
+  ImportFileInput,
+  ImportImage,
+  ImportPreview,
+  ImportResult,
+  OrganizeUndoResult
+} from '../shared/organize'
 import { BRANCH_KINDS, type BranchKind, type ProjectTree } from '../shared/projects'
 import { latestUndoTarget } from '../shared/undoTarget'
 import type {
@@ -26,6 +35,10 @@ import { relaunchElevated } from './elevate'
 import type { LiveSettings } from './liveSettings'
 import { driveRoots, getDriveUsage } from './overview'
 import { findRecycledRecords, getRecycleBinInfo, recycleBinDir } from './recycleBin'
+import { readImportImage } from './importImage'
+import { OrganizeLog } from './organizeLog'
+import { OrganizeService } from './organizeService'
+import { LikenessStore } from './likenessStore'
 import { ProjectsStore } from './projectsStore'
 import { restoreBatch, type RestoreDeps } from './restore'
 import type { ScanSession } from './session'
@@ -109,6 +122,71 @@ export function parseBranchKind(x: unknown): BranchKind {
   return x as BranchKind
 }
 
+const MAX_IMPORT = 200
+
+function parseDHash(x: unknown): string | null {
+  if (x === null) return null
+  if (typeof x !== 'string' || !isDHash(x)) invalid()
+  return x
+}
+
+function parseImportPath(x: unknown): string {
+  if (typeof x !== 'string' || x.length === 0 || x.length > MAX_PATH_LENGTH) invalid()
+  const path = normalizePath(x)
+  if (!isPlainDrivePath(path)) invalid()
+  return path
+}
+
+/** Images the renderer wants grouped. At most 200, each a plain drive path. */
+export function parseImportFiles(x: unknown): ImportFileInput[] {
+  if (!Array.isArray(x) || x.length < 1 || x.length > MAX_IMPORT) invalid()
+  const out: ImportFileInput[] = []
+  const seen = new Set<string>()
+  for (const item of x) {
+    if (typeof item !== 'object' || item === null) invalid()
+    const row = item as { path?: unknown; dhash?: unknown }
+    const path = parseImportPath(row.path)
+    const key = pathKey(path)
+    if (seen.has(key)) continue
+    seen.add(key)
+    out.push({ path, dhash: parseDHash(row.dhash) })
+  }
+  if (out.length === 0) invalid()
+  return out
+}
+
+/** Groups the person confirmed. Paths are plain drive paths; hashes are dHashes or null. */
+export function parseConfirmedGroups(x: unknown): ConfirmedGroup[] {
+  if (!Array.isArray(x) || x.length < 1 || x.length > MAX_IMPORT) invalid()
+  let count = 0
+  const groups: ConfirmedGroup[] = []
+  for (const item of x) {
+    if (typeof item !== 'object' || item === null) invalid()
+    const row = item as {
+      branch?: unknown
+      folder?: unknown
+      subjectId?: unknown
+      paths?: unknown
+      hashes?: unknown
+    }
+    const branch = parseBranchKind(row.branch)
+    if (typeof row.folder !== 'string' || row.folder.length > 200) invalid()
+    const subjectId = row.subjectId === null ? null : parseProjectId(row.subjectId)
+    if (!Array.isArray(row.paths) || !Array.isArray(row.hashes)) invalid()
+    if (row.paths.length !== row.hashes.length || row.paths.length < 1) invalid()
+    const paths: string[] = []
+    const hashes: (string | null)[] = []
+    for (let i = 0; i < row.paths.length; i++) {
+      paths.push(parseImportPath(row.paths[i]))
+      hashes.push(parseDHash(row.hashes[i]))
+      count++
+      if (count > MAX_IMPORT) invalid()
+    }
+    groups.push({ branch, folder: row.folder, subjectId, paths, hashes })
+  }
+  return groups
+}
+
 /** A folder or tracked file of `tree`, by id. */
 export function parseItemRef(
   x: unknown,
@@ -186,6 +264,14 @@ export interface HandlerDeps {
   cleanup: Omit<CleanupDeps, 'log'>
   binDir: RestoreDeps['binDir']
   projects: Pick<ProjectsStore, 'list' | 'create' | 'addSubject' | 'removeSubject'>
+  imports: {
+    pickImages(): Promise<string[] | null>
+    readImage(path: string): Promise<ImportImage | null>
+    preview(projectId: string, files: ImportFileInput[]): Promise<ImportPreview>
+    confirm(projectId: string, groups: ConfirmedGroup[]): Promise<ImportResult>
+    undo(): Promise<OrganizeUndoResult>
+    subjectHashes(): Promise<Record<string, string[]>>
+  }
   driveUsage(roots: string[]): Promise<DriveUsage[]>
   cleanProgress(done: number, total: number): void
   pickFolder(): Promise<string | null>
@@ -377,6 +463,30 @@ export function createHandlers(deps: HandlerDeps): StashHandlers {
       return deps.projects.removeSubject(parseProjectId(projectId), parseProjectId(subjectId))
     },
 
+    async pickImages(): Promise<string[] | null> {
+      return deps.imports.pickImages()
+    },
+
+    async readImportImage(path: unknown): Promise<ImportImage | null> {
+      return deps.imports.readImage(parseImportPath(path))
+    },
+
+    async previewImport(projectId: unknown, files: unknown): Promise<ImportPreview> {
+      return deps.imports.preview(parseProjectId(projectId), parseImportFiles(files))
+    },
+
+    async confirmImport(projectId: unknown, groups: unknown): Promise<ImportResult> {
+      return deps.imports.confirm(parseProjectId(projectId), parseConfirmedGroups(groups))
+    },
+
+    async undoOrganize(): Promise<OrganizeUndoResult> {
+      return deps.imports.undo()
+    },
+
+    async getSubjectHashes(): Promise<Record<string, string[]>> {
+      return deps.imports.subjectHashes()
+    },
+
     async getSettings(): Promise<Settings> {
       return settings.get()
     },
@@ -440,12 +550,19 @@ export interface IpcDeps {
  * progress goes to the window on `stash:clean-progress`.
  */
 export function registerIpc(deps: IpcDeps): void {
+  const projects = new ProjectsStore(deps.settingsDir, deps.env)
+  const organize = new OrganizeService(
+    projects,
+    new OrganizeLog(deps.settingsDir),
+    new LikenessStore(deps.settingsDir),
+    deps.env
+  )
   const handlers = createHandlers({
     session: deps.session,
     log: deps.log,
     settings: deps.settings,
     binUsage: deps.binUsage,
-    projects: new ProjectsStore(deps.settingsDir, deps.env),
+    projects,
     cleanup: {
       recycler: deps.recycler,
       binInfo: getRecycleBinInfo,
@@ -456,6 +573,29 @@ export function registerIpc(deps: IpcDeps): void {
     binDir: recycleBinDir,
     driveUsage: getDriveUsage,
     cleanProgress: forwarder(deps.window, CHANNELS.onCleanProgress),
+    imports: {
+      pickImages: async () => {
+        const win = deps.window()
+        const options = {
+          title: 'Choose images to organize',
+          properties: ['openFile' as const, 'multiSelections' as const],
+          filters: [{ name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'webp', 'gif'] }]
+        }
+        const result = await (win
+          ? dialog.showOpenDialog(win, options)
+          : dialog.showOpenDialog(options))
+        if (result.canceled || result.filePaths.length === 0) return null
+        const paths = result.filePaths
+          .map((file) => normalizePath(file))
+          .filter((file) => isPlainDrivePath(file))
+        return paths.length === 0 ? null : paths
+      },
+      readImage: readImportImage,
+      preview: (projectId, files) => organize.preview(projectId, files),
+      confirm: (projectId, groups) => organize.confirm(projectId, groups),
+      undo: () => organize.undo(),
+      subjectHashes: () => organize.subjectHashes()
+    },
     pickFolder: async () => {
       const win = deps.window()
       const options = { properties: ['openDirectory' as const] }

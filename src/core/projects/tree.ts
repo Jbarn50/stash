@@ -20,8 +20,9 @@ export {
   type ProjectTree
 } from '../../shared/projects'
 
-// The shape of a project folder, as data. Creating the directories waits until
-// `requireFeature('organize')` is on. These functions never touch the disk.
+// The shape of a project folder, as data. These functions never touch the disk.
+// Folders are created and files renamed only by the organize move, which calls
+// `requireFeature('organize')` before it does either.
 
 const ID = /^[A-Za-z0-9_-]{1,80}$/
 const RESERVED = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/i
