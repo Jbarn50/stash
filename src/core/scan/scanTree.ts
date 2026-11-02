@@ -34,6 +34,23 @@ export interface ScanResult {
 
 const DRIVE_ROOT = /^[A-Z]:\\$/
 const TOP_LEVEL_COUNT = 12
+const DEFAULT_CLUSTER = 4096
+// Allocation beyond the size this much (or beyond double the size, if more) cannot be real.
+const IMPOSSIBLE_EXTRA = 64 * 1024 * 1024
+
+/**
+ * Size on disk from lstat: `blocks * 512`, the NTFS allocation size. Some files (OneDrive's logs,
+ * for one) report nonsense there, such as 5e18 bytes for a 111-byte file. When the allocation is
+ * beyond the size rounded up to the cluster by more than that rounded size and by more than 64 MiB,
+ * the rounded size is used instead. Ordinary over-allocation of a growing file stays as it is.
+ */
+export function sizeOnDiskOf(stats: Pick<Stats, 'size' | 'blocks' | 'blksize'>): number {
+  if (typeof stats.blocks !== 'number') return stats.size
+  const allocated = stats.blocks * 512
+  const cluster = stats.blksize > 0 ? stats.blksize : DEFAULT_CLUSTER
+  const rounded = Math.ceil(stats.size / cluster) * cluster
+  return allocated - rounded > Math.max(rounded, IMPOSSIBLE_EXTRA) ? rounded : allocated
+}
 
 function errorCode(e: unknown): string | undefined {
   return (e as NodeJS.ErrnoException | undefined)?.code
@@ -116,7 +133,7 @@ export async function scanTree(opts: ScanOptions, deps: FsDeps = nodeFsDeps): Pr
     const hardLinkKey = stats.nlink > 1 ? await deps.hardLinkKey(path).catch(() => null) : null
     tree.addFile(folderId, {
       name: entry.name,
-      sizeOnDisk: typeof stats.blocks === 'number' ? stats.blocks * 512 : stats.size,
+      sizeOnDisk: sizeOnDiskOf(stats),
       logicalSize: stats.size,
       mtimeMs: stats.mtimeMs,
       hardLinkKey

@@ -1,5 +1,5 @@
 import type { Dirent, Stats } from 'node:fs'
-import { lstatSync } from 'node:fs'
+import { lstatSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { win32 } from 'node:path'
 import { afterAll, beforeAll, describe, expect, test, vi } from 'vitest'
 import { nodeFsDeps, type FsDeps } from '../../src/core/scan/fsDeps'
@@ -205,7 +205,36 @@ describe.runIf(process.platform === 'win32')('scanTree on the fixture', () => {
     expect(sizes.get(fx.p.photo)?.size).toBe(204800)
     expect(sizes.has(missing)).toBe(false)
   })
+
+  test('measureLockedFiles finds a name with wildcard characters by its exact name', async () => {
+    const odd = win32.join(fx.root, 'odd [1].bin')
+    writeFileSync(odd, Buffer.alloc(3000))
+    try {
+      const sizes = await measureLockedFiles([odd])
+      expect(sizes.get(odd)?.size).toBe(3000)
+    } finally {
+      rmSync(odd)
+    }
+  })
 })
+
+// Windows will not let anything stat its own paging and hibernation files, not even Get-Item; the
+// directory listing (dir, Get-ChildItem) still has their sizes. Runs only where C:\ has one.
+const rootSysFiles =
+  process.platform === 'win32'
+    ? readdirSync('C:\\').filter((n) => /^(pagefile|hiberfil|swapfile)\.sys$/i.test(n))
+    : []
+test.runIf(rootSysFiles.length > 0)(
+  'measureLockedFiles sizes the real C:\\ paging and hibernation files from the listing',
+  async () => {
+    const paths = rootSysFiles.map((n) => `C:\\${n}`)
+    const sizes = await measureLockedFiles(paths)
+    for (const p of paths) {
+      expect(sizes.get(p)?.size).toBeGreaterThan(0)
+      expect(Number.isFinite(sizes.get(p)?.mtimeMs)).toBe(true)
+    }
+  }
+)
 
 test('locked files at a drive root are measured through measureLocked', async () => {
   const stats = (dir: boolean): Stats =>
@@ -240,4 +269,69 @@ test('locked files at a drive root are measured through measureLocked', async ()
   ])
   expect(r.tree.folders[0].unmeasured).toEqual([])
   expect(r.tree.folders[0].sizeOnDisk).toBe(27_000_000_000)
+})
+
+describe('size on disk when lstat reports an impossible allocation', () => {
+  // blocks comes from the NTFS allocation size, which some files (OneDrive's logs, for one) report as
+  // nonsense: a 111-byte file with 5e18 bytes allocated. Such a file counts as its size rounded up to
+  // the cluster; ordinary over-allocation, which a growing file really has, is kept.
+  const scanOne = async (size: number, blocks: number, blksize = 4096): Promise<number> => {
+    const file = {
+      name: 'f.bin',
+      isSymbolicLink: () => false,
+      isDirectory: () => false,
+      isFile: () => true
+    }
+    const stats = (dir: boolean): Stats =>
+      ({
+        isSymbolicLink: () => false,
+        isDirectory: () => dir,
+        isFile: () => !dir,
+        mtimeMs: 1,
+        size: dir ? 0 : size,
+        blocks: dir ? 0 : blocks,
+        blksize,
+        nlink: 1
+      }) as unknown as Stats
+    const deps: FsDeps = {
+      readdir: async () => [file as unknown as Dirent],
+      lstat: async (p) => stats(p === 'X:\\'),
+      hardLinkKey: async () => 'unused',
+      measureLocked: async () => new Map()
+    }
+    const r = await scanTree({ root: 'X:\\', trackFileMinBytes: 0 }, deps)
+    return r.tree.folders[0].sizeOnDisk
+  }
+
+  test('a wildly over-allocated small file counts as its size rounded up to the cluster', async () => {
+    expect(await scanOne(111, 10452630453499056)).toBe(4096)
+    expect(await scanOne(256, 1_873_944)).toBe(4096)
+    expect(await scanOne(111, 10452630453499056, 8192)).toBe(8192)
+  })
+
+  test('a large file with an impossible allocation counts as its size rounded up', async () => {
+    expect(await scanOne(10_000_000, 9e15)).toBe(10_002_432)
+  })
+
+  test('ordinary over-allocation of a growing file is kept', async () => {
+    // From this PC: a 42 MB temp file with 97 MB allocated, a 6.9 MB log with 32.6 MB allocated.
+    expect(await scanOne(42_274_669, 189_864)).toBe(189_864 * 512)
+    expect(await scanOne(6_880_682, 63_616)).toBe(63_616 * 512)
+  })
+
+  test('the limit is 64 MiB beyond the rounded size, or double it for a large file', async () => {
+    // A small file preallocated by up to 64 MiB is believed...
+    expect(await scanOne(1000, (60 * 1024 * 1024) / 512)).toBe(60 * 1024 * 1024)
+    // ...and so is a 1 GiB file with 1.5 GiB allocated, though that is 512 MiB beyond its size.
+    expect(await scanOne(2 ** 30, (1.5 * 2 ** 30) / 512)).toBe(1.5 * 2 ** 30)
+    // Beyond both, it is not.
+    expect(await scanOne(1000, (65 * 1024 * 1024) / 512)).toBe(4096)
+    expect(await scanOne(2 ** 30, (2 ** 31 + 2 ** 20) / 512)).toBe(2 ** 30)
+  })
+
+  test('allocation at or below the size is used as it is', async () => {
+    expect(await scanOne(204_800, 400)).toBe(204_800)
+    expect(await scanOne(5000, 0)).toBe(0) // cloud-only placeholder, or data kept in the MFT
+    expect(await scanOne(1_000_000, 100)).toBe(51_200) // compressed or sparse
+  })
 })

@@ -11,13 +11,22 @@ const POWERSHELL = join(
 )
 
 // The paths arrive as JSON in STASH_PATHS and are never written into the script itself.
-// Get-Item reads sizes from the directory listing, which works for files Node cannot open,
-// such as pagefile.sys and hiberfil.sys.
+// Sizes come from listing each parent folder (what dir and Get-ChildItem -Force show), which works
+// for files nothing can stat, such as pagefile.sys and hiberfil.sys: Get-Item on those reports
+// that they do not exist. Names are matched exactly (case-insensitively), never as wildcards.
 const SCRIPT = [
   "$ErrorActionPreference = 'SilentlyContinue'",
+  '$listings = @{}',
   '$out = @(foreach ($p in ($env:STASH_PATHS | ConvertFrom-Json)) {',
-  '  $item = Get-Item -Force -LiteralPath $p',
-  '  if ($item -and -not $item.PSIsContainer) {',
+  '  $dir = [System.IO.Path]::GetDirectoryName($p)',
+  '  if (-not $dir) { continue }',
+  '  if (-not $listings.ContainsKey($dir)) {',
+  '    $byName = @{}',
+  '    foreach ($e in @(Get-ChildItem -Force -File -LiteralPath $dir)) { $byName[$e.Name] = $e }',
+  '    $listings[$dir] = $byName',
+  '  }',
+  '  $item = $listings[$dir][[System.IO.Path]::GetFileName($p)]',
+  '  if ($item) {',
   "    [pscustomobject]@{ path = $p; length = $item.Length; lastWriteTimeUtc = $item.LastWriteTimeUtc.ToString('o') }",
   '  }',
   '})',
