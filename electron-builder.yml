@@ -9,12 +9,18 @@ files:
   - '!{.eslintcache,eslint.config.mjs,.prettierignore,.prettierrc.yaml,dev-app-update.yml,CHANGELOG.md,README.md}'
   - '!{.env,.env.*,.npmrc,pnpm-lock.yaml}'
   - '!{tsconfig.json,tsconfig.node.json,tsconfig.web.json}'
+  # Development material never ships: the build ledger, docs, spikes, tests and test configs.
+  - '!.superpowers/**'
+  - '!{docs,spikes,tests,test-results,playwright-report}/**'
+  - '!{playwright.config.ts,vitest.config.mts}'
 asarUnpack:
   - resources/**
 win:
   executableName: Stash
 nsis:
-  artifactName: ${name}-${version}-setup.${ext}
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  artifactName: Stash-Setup-${version}.${ext}
   shortcutName: ${productName}
   uninstallDisplayName: ${productName}
   createDesktopShortcut: always
@@ -38,6 +44,3 @@ linux:
 appImage:
   artifactName: ${name}-${version}.${ext}
 npmRebuild: false
-publish:
-  provider: generic
-  url: https://example.com/auto-updates
