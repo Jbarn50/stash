@@ -7,11 +7,9 @@ Read `docs/handover.md` first. It has the status, the next steps in order, and t
   - The spec is in `docs/superpowers/specs/`, and the plan in `docs/superpowers/plans/`.
   - The decision ledger is `.superpowers/sdd/2026-11-01-space-cleanup/progress.md`: on this PC only, git-ignored. Search it for `Ruling:`, `minor (deferred)` and `Note → Task`.
 - **Next steps:**
-  1. Review Task 13 (`307befd..0ed91a3`).
-  2. Task 14.
-  3. Bring in Tasks 15–18 from branch `feat/space-cleanup-ui`.
-  4. Task 19.
-  5. The final review.
+  1. Read `docs/reviews/2026-11-02-space-cleanup-final-review.md`. Tasks 1–18 are done. Task 19 still needs a Windows install and the manual checks.
+  2. Shortcut and icon behavior is in `docs/installer.md`.
+  3. The old task order (review Task 13, then 14, then bring in 15–18) is finished. Do not restart it.
 - **Working copy:** work on branch `feat/space-cleanup`. One agent writes here at a time; Claude has stopped writing as of 2026-11-02.
   - The GitHub remote `origin` is https://github.com/Jbarn50/stash (public).
   - Never push or merge without the user.

@@ -29,7 +29,9 @@ function createWindow(): BrowserWindow {
     show: false,
     title: 'Stash',
     autoHideMenuBar: true,
-    ...(process.platform === 'linux' ? { icon } : {}),
+    // Window icon in development and on Linux. The packaged Windows exe embeds
+    // build/icon.ico, and the installer shortcuts use that exe as their icon.
+    icon,
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       contextIsolation: true,

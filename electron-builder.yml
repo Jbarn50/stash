@@ -9,21 +9,28 @@ files:
   - '!{.eslintcache,eslint.config.mjs,.prettierignore,.prettierrc.yaml,dev-app-update.yml,CHANGELOG.md,README.md,AGENTS.md}'
   - '!{.env,.env.*,.npmrc,pnpm-lock.yaml}'
   - '!{tsconfig.json,tsconfig.node.json,tsconfig.web.json}'
-  # Development material never ships: the build ledger, docs, spikes, tests and test configs.
+  # Development material never ships: the build ledger, docs, spikes, icon script, tests and test configs.
   - '!.superpowers/**'
-  - '!{docs,spikes,tests,test-results,playwright-report}/**'
+  - '!{docs,spikes,scripts,tests,test-results,playwright-report}/**'
   - '!{playwright.config.ts,vitest.config.mts}'
 asarUnpack:
   - resources/**
 win:
   executableName: Stash
+  # rcedit writes this into Stash.exe. Shortcuts point at the exe, so they show it.
+  icon: build/icon.ico
 nsis:
   oneClick: false
   allowToChangeInstallationDirectory: true
   artifactName: Stash-Setup-${version}.${ext}
   shortcutName: ${productName}
   uninstallDisplayName: ${productName}
+  # See docs/installer.md. Fresh installs create the desktop shortcut; "always"
+  # also puts it back on a later install if the user has removed it.
   createDesktopShortcut: always
+  createStartMenuShortcut: true
+  installerIcon: build/icon.ico
+  uninstallerIcon: build/icon.ico
 mac:
   entitlementsInherit: build/entitlements.mac.plist
   extendInfo:
