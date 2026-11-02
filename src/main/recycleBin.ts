@@ -34,7 +34,8 @@ const WHOAMI = join(SYSTEM32, 'whoami.exe')
 
 const CURRENT_VERSION = 'Software\\Microsoft\\Windows\\CurrentVersion'
 const BITBUCKET_VOLUMES = `HKCU\\${CURRENT_VERSION}\\Explorer\\BitBucket\\Volume`
-// Group Policy "Do not move deleted files to the Recycle Bin", per user and per machine.
+// Group Policy, per user and per machine, holds two values in this one key: NoRecycleFiles ("Do not
+// move deleted files to the Recycle Bin") and RecycleBinSize ("Maximum allowed Recycle Bin size").
 const POLICY_KEYS = ['HKCU', 'HKLM'].map(
   (hive) => `${hive}\\${CURRENT_VERSION}\\Policies\\Explorer`
 )
@@ -96,18 +97,28 @@ export async function getUserSid(): Promise<string> {
   return userSid
 }
 
+/** What Group Policy says about the Recycle Bin, taking the user and the machine hive together. */
+export interface RecyclePolicy {
+  /** NoRecycleFiles is set: Explorer deletes for good. */
+  noRecycleFiles: boolean
+  /** RecycleBinSize is set, to any value: a policy caps the bin, perhaps below MaxCapacity. */
+  sizeCapped: boolean
+}
+
 /**
  * Whether files deleted on a drive go to its Recycle Bin, and how much the bin may hold.
  * `volume` is the drive's BitBucket values from the registry, or null when they could not be read.
- * `noRecycleFiles` is the Group Policy that makes Explorer delete for good; it overrides the volume.
+ * `policy` is Group Policy. NoRecycleFiles makes Explorer delete for good and overrides the volume.
+ * A size policy may cap the bin below MaxCapacity, so that capacity cannot be trusted: unknown.
  * Only a bin that is plainly on counts as enabled: anything unclear is unknown, because Windows
  * silently purges or permanently deletes what does not fit. `maxCapacityBytes` is 0 unless enabled.
  */
 export function binStatus(
   volume: Record<string, number> | null,
-  noRecycleFiles: boolean
+  policy: RecyclePolicy
 ): Pick<RecycleBinInfo, 'status' | 'maxCapacityBytes'> {
-  if (noRecycleFiles) return { status: 'disabled', maxCapacityBytes: 0 }
+  if (policy.noRecycleFiles) return { status: 'disabled', maxCapacityBytes: 0 }
+  if (policy.sizeCapped) return { status: 'unknown', maxCapacityBytes: 0 }
   if (volume === null) return { status: 'unknown', maxCapacityBytes: 0 }
   if (volume.NukeOnDelete === 1) return { status: 'disabled', maxCapacityBytes: 0 }
   if (volume.NukeOnDelete === 0 && volume.MaxCapacity !== undefined) {
@@ -128,20 +139,35 @@ async function readVolumeValues(drive: string): Promise<Record<string, number> |
   }
 }
 
-/** True when either Group Policy hive sets NoRecycleFiles. Any other non-zero value counts too. */
-async function policyTurnsRecyclingOff(): Promise<boolean> {
-  const set = await Promise.all(
-    POLICY_KEYS.map(async (key) => {
+// reg.exe exits with code 1 when a key is not there, which is the normal case on a machine without
+// that policy. A tool that was killed (a timeout), could not be started, or exited with any other
+// code has not answered, and says nothing about the policy.
+function keyIsAbsent(e: unknown): boolean {
+  const { code, killed } = e as { code?: unknown; killed?: boolean }
+  return code === 1 && !killed
+}
+
+/**
+ * What Group Policy says about the Recycle Bin, from one query of each hive's Policies\Explorer key.
+ * A hive without the key says nothing. A query that fails any other way rejects: the policy is then
+ * unread, and nobody can tell that it is not set. NoRecycleFiles counts with any non-zero value;
+ * RecycleBinSize counts with any value at all.
+ */
+async function readRecyclePolicy(): Promise<RecyclePolicy> {
+  const hives = await Promise.all(
+    POLICY_KEYS.map(async (key): Promise<Record<string, number>> => {
       try {
-        const values = parseRegDwords(await run(REG, ['query', key, '/v', 'NoRecycleFiles']))
-        return (values.NoRecycleFiles ?? 0) !== 0
-      } catch {
-        // reg.exe exits non-zero when the key or value is absent, which is the normal case.
-        return false
+        return parseRegDwords(await run(REG, ['query', key]))
+      } catch (e) {
+        if (keyIsAbsent(e)) return {}
+        throw e
       }
     })
   )
-  return set.some(Boolean)
+  return {
+    noRecycleFiles: hives.some((values) => (values.NoRecycleFiles ?? 0) !== 0),
+    sizeCapped: hives.some((values) => values.RecycleBinSize !== undefined)
+  }
 }
 
 // The logical size of `path`: a file's own size, or the sum over a folder's contents. Uses lstat
@@ -213,19 +239,16 @@ export async function recycleBinDir(drive: string): Promise<string> {
 
 /**
  * Whether deleting on a drive recycles, how much the bin may hold, and how much it holds now.
- * Never rejects: whatever cannot be established is `unknown` with zeros, which the cleanup treats
- * like a bin that is off. A drive that is not exactly a letter and a colon starts no process.
- * `usedBytes` is measured only for an enabled bin.
+ * Never rejects: whatever cannot be established, a Group Policy that could not be read included, is
+ * `unknown` with zeros, which the cleanup treats like a bin that is off. A drive that is not exactly
+ * a letter and a colon starts no process. `usedBytes` is measured only for an enabled bin.
  */
 export async function getRecycleBinInfo(drive: string): Promise<RecycleBinInfo> {
   const letter = asDrive(drive)
   if (letter === null) return { drive, status: 'unknown', maxCapacityBytes: 0, usedBytes: 0 }
   try {
-    const [volume, noRecycleFiles] = await Promise.all([
-      readVolumeValues(letter),
-      policyTurnsRecyclingOff()
-    ])
-    const { status, maxCapacityBytes } = binStatus(volume, noRecycleFiles)
+    const [volume, policy] = await Promise.all([readVolumeValues(letter), readRecyclePolicy()])
+    const { status, maxCapacityBytes } = binStatus(volume, policy)
     const usedBytes = status === 'enabled' ? await recycledBytes(await recycleBinDir(letter)) : 0
     return { drive: letter, status, maxCapacityBytes, usedBytes }
   } catch {

@@ -156,34 +156,45 @@ describe('parsers', () => {
 describe('binStatus', () => {
   const disabled = { status: 'disabled', maxCapacityBytes: 0 }
   const unknown = { status: 'unknown', maxCapacityBytes: 0 }
+  // What Group Policy says: nothing, NoRecycleFiles, or RecycleBinSize (which caps the bin).
+  const noPolicy = { noRecycleFiles: false, sizeCapped: false }
+  const turnedOff = { noRecycleFiles: true, sizeCapped: false }
+  const capped = { noRecycleFiles: false, sizeCapped: true }
+  const cappedAndOff = { noRecycleFiles: true, sizeCapped: true }
+  const on = { NukeOnDelete: 0, MaxCapacity: 100 }
 
   test.each([
-    ['the Group Policy is set and the volume could not be read', null, true, disabled],
-    [
-      'the Group Policy is set though the volume says on',
-      { NukeOnDelete: 0, MaxCapacity: 100 },
-      true,
-      disabled
-    ],
-    ['the volume could not be read', null, false, unknown],
-    ['NukeOnDelete is 1', { NukeOnDelete: 1, MaxCapacity: 100 }, false, disabled],
-    ['NukeOnDelete is 1 and MaxCapacity is missing', { NukeOnDelete: 1 }, false, disabled],
+    ['the Group Policy is set and the volume could not be read', null, turnedOff, disabled],
+    ['the Group Policy is set though the volume says on', on, turnedOff, disabled],
+    ['the volume could not be read', null, noPolicy, unknown],
+    ['NukeOnDelete is 1', { NukeOnDelete: 1, MaxCapacity: 100 }, noPolicy, disabled],
+    ['NukeOnDelete is 1 and MaxCapacity is missing', { NukeOnDelete: 1 }, noPolicy, disabled],
     [
       'NukeOnDelete is 0 and MaxCapacity (in MB) is present',
-      { NukeOnDelete: 0, MaxCapacity: 100 },
-      false,
+      on,
+      noPolicy,
       { status: 'enabled', maxCapacityBytes: 104_857_600 }
     ],
-    ['NukeOnDelete is 0 and MaxCapacity is missing', { NukeOnDelete: 0 }, false, unknown],
-    ['NukeOnDelete is missing', { MaxCapacity: 100 }, false, unknown],
-    ['NukeOnDelete is neither 0 nor 1', { NukeOnDelete: 2, MaxCapacity: 100 }, false, unknown],
-    ['the volume has none of the values', {}, false, unknown]
-  ])('%s', (_name, volume, noRecycleFiles, expected) => {
-    expect(binStatus(volume, noRecycleFiles)).toEqual(expected)
+    ['NukeOnDelete is 0 and MaxCapacity is missing', { NukeOnDelete: 0 }, noPolicy, unknown],
+    ['NukeOnDelete is missing', { MaxCapacity: 100 }, noPolicy, unknown],
+    ['NukeOnDelete is neither 0 nor 1', { NukeOnDelete: 2, MaxCapacity: 100 }, noPolicy, unknown],
+    ['the volume has none of the values', {}, noPolicy, unknown],
+    // A policy that caps the bin may leave less room than MaxCapacity says, so nothing is certain.
+    ['a size policy caps the bin, though the volume says on', on, capped, unknown],
+    ['a size policy caps the bin and the volume could not be read', null, capped, unknown],
+    [
+      'a size policy caps the bin and NukeOnDelete is 1',
+      { NukeOnDelete: 1, MaxCapacity: 100 },
+      capped,
+      unknown
+    ],
+    ['a size policy caps the bin but NoRecycleFiles turns it off', on, cappedAndOff, disabled]
+  ])('%s', (_name, volume, policy, expected) => {
+    expect(binStatus(volume, policy)).toEqual(expected)
   })
 
   test('MaxCapacity is in megabytes of 1,048,576 bytes', () => {
-    expect(binStatus({ NukeOnDelete: 0, MaxCapacity: 26343 }, false)).toEqual({
+    expect(binStatus({ NukeOnDelete: 0, MaxCapacity: 26343 }, noPolicy)).toEqual({
       status: 'enabled',
       maxCapacityBytes: 27_622_637_568
     })
@@ -551,10 +562,28 @@ describe('with the Windows tools faked', () => {
   interface Machine {
     mountvol: string | Error
     volume: Record<string, number> | Error
-    /** NoRecycleFiles per hive; a hive left out has no such value, and reg.exe exits 1. */
-    policies: { HKCU?: number; HKLM?: number }
+    /**
+     * The DWORDs of each hive's Policies\Explorer key. A hive left out has no such key, and reg.exe
+     * exits 1. An Error is that query failing some other way.
+     */
+    policies: { HKCU?: Record<string, number> | Error; HKLM?: Record<string, number> | Error }
     sid: string | Error
   }
+
+  /** What execFile's callback gets when a tool fails: the exit code, or why there was none. */
+  const toolError = (
+    message: string,
+    props: { code: number | string | null; killed?: boolean; signal?: string | null }
+  ): Error => Object.assign(new Error(message), { killed: false, signal: null, ...props })
+
+  const keyAbsent = (): Error =>
+    toolError(
+      'Command failed: reg.exe query\nERROR: The system was unable to find the specified registry key or value.\n',
+      { code: 1 }
+    )
+
+  // Other policies that really sit in HKLM\...\Policies\Explorer on a Windows 11 machine.
+  const OTHER_POLICIES = { ForceActiveDesktopOn: 0, NoActiveDesktop: 1, NoActiveDesktopChanges: 1 }
 
   const listing = (key: string, values: Record<string, number>): string =>
     `\r\n${key}\r\n${Object.entries(values)
@@ -571,10 +600,9 @@ describe('with the Windows tools faked', () => {
       for (const hive of ['HKCU', 'HKLM'] as const) {
         const key = `${hive}\\${POLICY_KEY}`
         if (args[1] !== key) continue
-        const value = m.policies[hive]
-        return value === undefined
-          ? new Error('ERROR: The system was unable to find the specified registry key or value.')
-          : listing(key, { NoRecycleFiles: value })
+        const policy = m.policies[hive]
+        if (policy === undefined) return keyAbsent()
+        return policy instanceof Error ? policy : listing(key, { ...OTHER_POLICIES, ...policy })
       }
     }
     return new Error(`unexpected command: ${tool} ${args.join(' ')}`)
@@ -633,13 +661,16 @@ describe('with the Windows tools faked', () => {
       expect(started('reg.exe')).toContainEqual(['query', VOLUME_KEY])
     })
 
-    test('the Group Policy is read from both hives, for the one value', async () => {
+    test('the volume and each Group Policy hive are read with one query each, for the whole key', async () => {
       const { getRecycleBinInfo } = await boot()
       await getRecycleBinInfo('C:')
-      expect(started('reg.exe')).toEqual(
+      const queries = started('reg.exe')
+      expect(queries).toHaveLength(3)
+      expect(queries).toEqual(
         expect.arrayContaining([
-          ['query', `HKCU\\${POLICY_KEY}`, '/v', 'NoRecycleFiles'],
-          ['query', `HKLM\\${POLICY_KEY}`, '/v', 'NoRecycleFiles']
+          ['query', VOLUME_KEY],
+          ['query', `HKCU\\${POLICY_KEY}`],
+          ['query', `HKLM\\${POLICY_KEY}`]
         ])
       )
     })
@@ -670,10 +701,10 @@ describe('with the Windows tools faked', () => {
     })
 
     test.each([
-      ['the user Group Policy', { HKCU: 1 }],
-      ['the machine Group Policy', { HKLM: 1 }],
-      ['both Group Policies', { HKCU: 1, HKLM: 1 }],
-      ['a Group Policy with another non-zero value', { HKCU: 2 }]
+      ['the user Group Policy', { HKCU: { NoRecycleFiles: 1 } }],
+      ['the machine Group Policy', { HKLM: { NoRecycleFiles: 1 } }],
+      ['both Group Policies', { HKCU: { NoRecycleFiles: 1 }, HKLM: { NoRecycleFiles: 1 } }],
+      ['a Group Policy with another non-zero value', { HKCU: { NoRecycleFiles: 2 } }]
     ])('%s: the bin is off even when the volume says on', async (_name, policies) => {
       const { getRecycleBinInfo } = await boot({ policies })
       failFs('readdir', BIN, 'EPERM')
@@ -688,17 +719,95 @@ describe('with the Windows tools faked', () => {
     test('a Group Policy that turns the bin off counts even when the volume cannot be read', async () => {
       const { getRecycleBinInfo } = await boot({
         mountvol: new Error('The system cannot find the file specified.'),
-        policies: { HKLM: 1 }
+        policies: { HKLM: { NoRecycleFiles: 1 } }
       })
       expect((await getRecycleBinInfo('C:')).status).toBe('disabled')
     })
 
     test('a Group Policy set to 0, or not set at all, leaves the volume in charge', async () => {
-      const { getRecycleBinInfo } = await boot({ policies: { HKCU: 0, HKLM: 0 } })
+      const { getRecycleBinInfo } = await boot({
+        policies: { HKCU: { NoRecycleFiles: 0 }, HKLM: { NoRecycleFiles: 0 } }
+      })
       expect((await getRecycleBinInfo('C:')).status).toBe('enabled')
+      // No such key in either hive is the normal case: reg.exe exits 1, and that means "not set".
       const { getRecycleBinInfo: again } = await boot({ policies: {} })
       expect((await again('C:')).status).toBe('enabled')
     })
+
+    test('other policies in the key mean nothing', async () => {
+      // The keys exist, as HKLM\...\Policies\Explorer does on a real machine, with unrelated values.
+      const { getRecycleBinInfo } = await boot({ policies: { HKCU: {}, HKLM: {} } })
+      expect((await getRecycleBinInfo('C:')).status).toBe('enabled')
+    })
+
+    // A query that did not answer says nothing about the policy, so the bin cannot be called enabled.
+    // Only reg.exe exiting with code 1, without being killed, means the key is absent.
+    const queryFailures: [string, Error][] = [
+      [
+        'times out',
+        toolError('Command failed: reg.exe query', { code: null, killed: true, signal: 'SIGTERM' })
+      ],
+      ['cannot be started', toolError('spawn reg.exe ENOENT', { code: 'ENOENT' })],
+      ['exits with another code', toolError('Command failed: reg.exe query', { code: 2 })],
+      [
+        'is killed though its exit code is 1',
+        toolError('Command failed: reg.exe query', { code: 1, killed: true, signal: 'SIGTERM' })
+      ],
+      [
+        'prints more than the buffer holds',
+        toolError('stdout maxBuffer length exceeded', { code: 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER' })
+      ]
+    ]
+
+    test.each(
+      (['HKCU', 'HKLM'] as const).flatMap((hive) =>
+        queryFailures.map(([failure, error]) => [hive, failure, error] as const)
+      )
+    )('the %s policy query %s: the bin is unknown, not enabled', async (hive, _failure, error) => {
+      const { getRecycleBinInfo } = await boot({ policies: { [hive]: error } })
+      expect(await getRecycleBinInfo('C:')).toEqual({
+        drive: 'C:',
+        status: 'unknown',
+        maxCapacityBytes: 0,
+        usedBytes: 0
+      })
+    })
+
+    test.each([
+      ['in HKLM only', { HKLM: { RecycleBinSize: 25 } }],
+      ['in HKCU only', { HKCU: { RecycleBinSize: 25 } }],
+      ['in both hives', { HKCU: { RecycleBinSize: 10 }, HKLM: { RecycleBinSize: 90 } }],
+      ['with a value of 0, since any value counts', { HKLM: { RecycleBinSize: 0 } }],
+      ['beside a NoRecycleFiles of 0', { HKLM: { RecycleBinSize: 25, NoRecycleFiles: 0 } }]
+    ])('a RecycleBinSize policy %s: the bin is unknown, not enabled', async (_name, policies) => {
+      const { getRecycleBinInfo } = await boot({ policies })
+      expect(await getRecycleBinInfo('C:')).toEqual({
+        drive: 'C:',
+        status: 'unknown',
+        maxCapacityBytes: 0,
+        usedBytes: 0
+      })
+    })
+
+    test.each([
+      ['in the same key', { HKLM: { RecycleBinSize: 25, NoRecycleFiles: 1 } }],
+      ['in the other hive', { HKCU: { NoRecycleFiles: 1 }, HKLM: { RecycleBinSize: 25 } }],
+      [
+        'in the other hive, the other way round',
+        { HKCU: { RecycleBinSize: 25 }, HKLM: { NoRecycleFiles: 1 } }
+      ]
+    ])(
+      'NoRecycleFiles %s still makes the bin disabled beside RecycleBinSize',
+      async (_name, policies) => {
+        const { getRecycleBinInfo } = await boot({ policies })
+        expect(await getRecycleBinInfo('C:')).toEqual({
+          drive: 'C:',
+          status: 'disabled',
+          maxCapacityBytes: 0,
+          usedBytes: 0
+        })
+      }
+    )
 
     test.each([
       ['mountvol fails', { mountvol: new Error('The system cannot find the file specified.') }],
